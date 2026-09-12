@@ -50,6 +50,7 @@ class Character:
     lip: str = "#E27A86"
     blush: str = "#F5A0A8"
     accessories: list[str] = field(default_factory=list)   # star_clip | ribbon | cat_ears | glasses | heart
+    ref: str | None = None         # photo mode: reference photo path relative to the pack dir (gitignored)
 
 
 @dataclass

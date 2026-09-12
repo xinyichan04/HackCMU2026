@@ -1,21 +1,21 @@
 {
   "id": "le-sserafim",
   "name": "LE SSERAFIM (toon)",
-  "_note": "Stylized cartoon designs. Every character is data only: edit colors/styles here, no code changes.",
+  "_note": "Stylized cartoon designs. Every character is data only: edit colors/styles here, no code changes. 'ref' is only used by --mode photo: drop <id>/ref.jpg into this folder (photos are gitignored).",
   "characters": [
-    { "id": "chaewon", "name": "Chaewon", "skin": "#F8DFCD", "hair": "#2A1A12", "hair_style": "long",
+    { "id": "chaewon", "ref": "chaewon/ref.jpg", "name": "Chaewon", "skin": "#F8DFCD", "hair": "#2A1A12", "hair_style": "long",
       "bangs": "full", "eye": "#4B2E1D", "eye_shape": 0.62, "lip": "#E4737B", "blush": "#F7A6AC",
       "accessories": ["star_clip"] },
-    { "id": "sakura", "name": "Sakura", "skin": "#FAE6D8", "hair": "#E7B3C4", "hair_style": "long",
+    { "id": "sakura", "ref": "sakura/ref.jpg", "name": "Sakura", "skin": "#FAE6D8", "hair": "#E7B3C4", "hair_style": "long",
       "bangs": "side", "eye": "#5A3A2A", "eye_shape": 0.58, "lip": "#EE8A97", "blush": "#F9B8C2",
       "accessories": ["ribbon"] },
-    { "id": "yunjin", "name": "Yunjin", "skin": "#F3D3BC", "hair": "#141010", "hair_style": "long",
+    { "id": "yunjin", "ref": "yunjin/ref.jpg", "name": "Yunjin", "skin": "#F3D3BC", "hair": "#141010", "hair_style": "long",
       "bangs": "none", "eye": "#2E1C12", "eye_shape": 0.55, "lip": "#D9606E", "blush": "#F2A0A6",
       "accessories": ["hoops"] },
-    { "id": "kazuha", "name": "Kazuha", "skin": "#F8E0CF", "hair": "#3A2418", "hair_style": "ponytail",
+    { "id": "kazuha", "ref": "kazuha/ref.jpg", "name": "Kazuha", "skin": "#F8E0CF", "hair": "#3A2418", "hair_style": "ponytail",
       "bangs": "side", "eye": "#3C2616", "eye_shape": 0.60, "lip": "#E8808C", "blush": "#F6AEB4",
       "accessories": [] },
-    { "id": "eunchae", "name": "Eunchae", "skin": "#FAE3D3", "hair": "#1E1412", "hair_style": "bob",
+    { "id": "eunchae", "ref": "eunchae/ref.jpg", "name": "Eunchae", "skin": "#FAE3D3", "hair": "#1E1412", "hair_style": "bob",
       "bangs": "full", "eye": "#4A2F20", "eye_shape": 0.68, "lip": "#EF8E9A", "blush": "#FBB5BC",
       "accessories": ["cat_ears", "heart"] }
   ]

@@ -35,6 +35,33 @@ cannot open the camera.
 Hotkeys in the preview: `n`/`p` next/previous character, `r` start/stop recording, `e` toggle landmark
 smoothing, `d` debug mesh, `m` mirror, `q` quit.
 
+## Photo mode (photoreal one-shot face swap)
+
+`--mode photo` swaps a real face from a reference photo onto each tracked person instead of drawing a
+cartoon. Nothing is trained: InsightFace `buffalo_l` detects faces and computes a 512-d identity embedding,
+`inswapper_128` regenerates the face crop as the reference identity with the live pose/expression, and
+pastes it back. One photo per character; adding a character = a JSON entry + a photo.
+
+```bash
+./.venv/bin/pip install -r poc/requirements.txt            # adds insightface + onnxruntime (CoreML on macOS)
+mkdir -p poc/packs/le-sserafim/chaewon && cp ~/Pictures/chaewon.jpg poc/packs/le-sserafim/chaewon/ref.jpg
+./.venv/bin/python poc/live.py --mode photo --character chaewon
+./.venv/bin/python poc/live.py --mode photo --ref ~/Pictures/someone.jpg     # one-off reference, no pack edit
+./.venv/bin/python poc/live.py --mode photo --det-size 320 --detect-every 2  # faster on M1-M3
+./.venv/bin/python poc/live.py --mode photo --source in.mp4 --record out.mp4 --no-preview --enhance
+```
+
+First run downloads `inswapper_128.onnx` (554 MB) into `poc/models/` and insightface fetches `buffalo_l`
+(~300 MB). Reference photos: frontal, evenly lit, no heavy stage makeup, face ≥ 512 px; keep a few candidates
+and pick by eye. They are gitignored (`poc/packs/**/*.jpg|png`) because they are real people's likenesses;
+every teammate drops their own copies in locally. Expect roughly 5-10 fps on M1-M3 and 13-20 on M4 with
+CoreML at 720p for one face; `e` toggles the GFPGAN enhancer (needs `pip install gfpgan basicsr facexlib`,
+pulls torch, halves fps: use it for recordings, not live). `d` shows detector boxes. Output is watermarked
+"AI face swap". Licences: inswapper/ArcFace/RetinaFace are non-commercial research models.
+
+macOS camera gotcha: if the preview opens but the camera is black or "cannot open camera" with no permission
+prompt, a previous deny is cached; run `tccutil reset Camera com.apple.Terminal` and launch again.
+
 ## Layout
 
 ```

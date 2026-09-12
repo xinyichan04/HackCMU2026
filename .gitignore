@@ -7,3 +7,7 @@ poc/models/
 *.mov
 .context/
 .DS_Store
+# photo-mode reference photos are real people's likenesses: keep them local
+poc/packs/**/*.jpg
+poc/packs/**/*.jpeg
+poc/packs/**/*.png

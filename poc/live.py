@@ -4,9 +4,14 @@
     python poc/live.py --pack poc/packs/le-sserafim --character chaewon --virtual-cam
     python poc/live.py --pack poc/packs/le-sserafim --character chaewon --record out.mp4
     python poc/live.py --pack poc/packs/le-sserafim --source clip.mp4 --record out.mp4 --no-preview
+    python poc/live.py --mode photo --character chaewon                 # photoreal swap (needs ref photos)
+    python poc/live.py --mode photo --ref ~/Pictures/chaewon.jpg        # one-off reference for the current character
 
-Hotkeys: n/p next/prev character, r start/stop recording, e toggle landmark smoothing, d debug mesh,
-         m toggle mirror, q quit.
+Hotkeys: n/p next/prev character, r start/stop recording, e toggle landmark smoothing (toon) / face
+         enhancer (photo), d debug overlay, m toggle mirror, q quit.
+
+Modes: toon  = MediaPipe landmarks -> stylized cartoon avatar (default, as shipped in PR #1).
+       photo = InsightFace one-shot face swap from a reference photo per character (see swap.py).
 """
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ from avatar import AvatarRenderer, Pack  # noqa: E402
 from tracker import MODEL_URL, FaceTracker  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-WATERMARK = "AI avatar"
+WATERMARKS = {"toon": "AI avatar", "photo": "AI face swap"}
 
 
 def ensure_model(path: Path) -> Path:
@@ -54,12 +59,12 @@ def open_source(args) -> tuple[cv2.VideoCapture, bool, float]:
     return cap, True, 30.0
 
 
-def draw_watermark(frame: np.ndarray):
+def draw_watermark(frame: np.ndarray, text: str = WATERMARKS["toon"]):
     h, w = frame.shape[:2]
-    (tw, th), _ = cv2.getTextSize(WATERMARK, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
     x, y = 14, h - 14
     cv2.rectangle(frame, (x - 6, y - th - 8), (x + tw + 6, y + 6), (0, 0, 0), -1)
-    cv2.putText(frame, WATERMARK, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
 
 def draw_hud(frame: np.ndarray, text: str, recording: bool):
@@ -112,6 +117,8 @@ class Recorder:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--mode", choices=["toon", "photo"], default="toon",
+                    help="toon = cartoon avatar (default); photo = photoreal one-shot face swap")
     ap.add_argument("--pack", default=str(HERE / "packs" / "le-sserafim"))
     ap.add_argument("--character", default=None, help="character id in pack.json (default: first)")
     ap.add_argument("--camera", type=int, default=0)
@@ -127,13 +134,30 @@ def main(argv=None):
     ap.add_argument("--model", default=str(HERE / "models" / "face_landmarker.task"))
     ap.add_argument("--max-frames", type=int, default=0, help="stop after N frames (tests)")
     ap.add_argument("--save-frame", default=None, help="write the last rendered frame to this PNG (tests)")
+    photo = ap.add_argument_group("photo mode")
+    photo.add_argument("--ref", default=None, help="reference photo for the CURRENT character (overrides pack.json)")
+    photo.add_argument("--swapper", default=None, help="path to inswapper_128(.fp16).onnx (default: auto-download)")
+    photo.add_argument("--provider", choices=["auto", "coreml", "cuda", "cpu"], default="auto")
+    photo.add_argument("--det-size", type=int, default=640, help="detector input size; 320 is faster")
+    photo.add_argument("--detect-every", type=int, default=1, help="run the detector every N frames (2 = faster)")
+    photo.add_argument("--enhance", action="store_true", help="GFPGAN on the swapped face (slow; not for live use)")
     args = ap.parse_args(argv)
 
     pack = Pack.load(args.pack)
     cur = pack.index(args.character) if args.character else 0
-    tracker = FaceTracker(str(ensure_model(Path(args.model))), max_faces=args.max_faces,
-                          smoothing=0.0 if args.no_smoothing else 0.35)
-    renderer = AvatarRenderer()
+    tracker = renderer = swapper = None
+    if args.mode == "photo":
+        from swap import FaceSwapper, draw_debug_photo  # noqa: E402  (heavy imports only in photo mode)
+        swapper = FaceSwapper(args.swapper, det_size=args.det_size, provider=args.provider, enhancer=args.enhance)
+        if swapper.reference_for(pack.characters[cur], pack.path, args.ref) is None:
+            sys.exit(f"no reference photo for {pack.characters[cur].id}: add \"ref\" in pack.json and drop the "
+                     f"photo in {pack.path}, or pass --ref <photo>")
+        last_faces: list = []
+    else:
+        tracker = FaceTracker(str(ensure_model(Path(args.model))), max_faces=args.max_faces,
+                              smoothing=0.0 if args.no_smoothing else 0.35)
+        renderer = AvatarRenderer()
+    watermark = WATERMARKS[args.mode]
     cap, is_camera, src_fps = open_source(args)
     mirror = is_camera and not args.no_mirror
     debug = False
@@ -158,13 +182,25 @@ def main(argv=None):
                     frame = cv2.resize(frame, (args.width, args.height))
             if mirror:
                 frame = cv2.flip(frame, 1)
-            ts = int((time.monotonic() - t0) * 1000) if is_camera else int(frame_i * 1000 / src_fps)
-            faces = tracker.track(frame, ts)
-
             out = frame
-            for i, face in enumerate(faces):
-                out = renderer.render(out, face, pack.characters[(cur + i) % len(pack.characters)])
-            draw_watermark(out)
+            if args.mode == "photo":
+                if frame_i % max(1, args.detect_every) == 0 or not last_faces:
+                    last_faces = swapper.detect(frame, max_faces=args.max_faces)
+                faces = last_faces
+                for i, face in enumerate(faces):
+                    ch = pack.characters[(cur + i) % len(pack.characters)]
+                    ref = swapper.reference_for(ch, pack.path, args.ref if i == 0 else None)
+                    if ref is None:
+                        continue                      # character without a photo: leave that face alone
+                    out = swapper.swap(out, face, ref)
+                    if swapper.enhancer_on:
+                        out = swapper.enhance(out, face)
+            else:
+                ts = int((time.monotonic() - t0) * 1000) if is_camera else int(frame_i * 1000 / src_fps)
+                faces = tracker.track(frame, ts)
+                for i, face in enumerate(faces):
+                    out = renderer.render(out, face, pack.characters[(cur + i) % len(pack.characters)])
+            draw_watermark(out, watermark)
 
             if args.record and not rec.active and frame_i == 0:
                 rec.start(args.record, (out.shape[1], out.shape[0]), src_fps)
@@ -187,9 +223,11 @@ def main(argv=None):
             if not args.no_preview:
                 view = out.copy()
                 if debug:
-                    draw_debug(view, faces)
-                draw_hud(view, f"{pack.characters[cur].name}  {fps_ema:4.1f} fps  faces {len(faces)}"
-                               f"{'  smooth' if tracker.smoothing else ''}", rec.active)
+                    (draw_debug_photo if args.mode == "photo" else draw_debug)(view, faces)
+                extra = ("  enhance" if swapper.enhancer_on else "") if args.mode == "photo" \
+                    else ("  smooth" if tracker.smoothing else "")
+                draw_hud(view, f"{args.mode} {pack.characters[cur].name}  {fps_ema:4.1f} fps  faces {len(faces)}"
+                               f"{extra}", rec.active)
                 cv2.imshow(win, view)
                 k = cv2.waitKey(1) & 0xFF
                 if k == ord("q") or k == 27:
@@ -205,7 +243,10 @@ def main(argv=None):
                         rec.start(args.record or time.strftime("avatar-%Y%m%d-%H%M%S.mp4"),
                                   (out.shape[1], out.shape[0]), src_fps)
                 elif k == ord("e"):
-                    tracker.smoothing = 0.0 if tracker.smoothing else 0.35
+                    if args.mode == "photo":
+                        swapper.disable_enhancer() if swapper.enhancer_on else swapper.enable_enhancer()
+                    else:
+                        tracker.smoothing = 0.0 if tracker.smoothing else 0.35
                 elif k == ord("d"):
                     debug = not debug
                 elif k == ord("m"):
@@ -217,7 +258,8 @@ def main(argv=None):
         if vcam is not None:
             vcam.close()
         cap.release()
-        tracker.close()
+        if tracker is not None:
+            tracker.close()
         if not args.no_preview:
             cv2.destroyAllWindows()
         if args.save_frame and out is not None:
