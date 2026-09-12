@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 poc/models/
+poc/archive/models/
 *.mp4
 *.mov
 .context/
@@ -11,6 +12,9 @@ poc/models/
 poc/packs/**/*.jpg
 poc/packs/**/*.jpeg
 poc/packs/**/*.png
+poc/archive/packs/**/*.jpg
+poc/archive/packs/**/*.jpeg
+poc/archive/packs/**/*.png
 # reenactment filter (cindy-tryout)
 sources/*
 !sources/.gitkeep
@@ -18,6 +22,7 @@ sources/*
 results/
 # generated face textures are real people's likenesses: keep them local
 poc/textures/
+poc/archive/textures/
 # third-party test avatars: re-fetch with poc/models3d/fetch.sh
 poc/models3d/*.glb
 poc/models3d/*.vrm
