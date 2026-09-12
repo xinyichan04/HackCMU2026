@@ -428,7 +428,7 @@ class UploadProvider:
 
     def generate(self, job, images):
         if job.get('mesh'):
-            return job['mesh']                 # a mesh was uploaded instead of photos
+            return unpack_if_zip(job['mesh'], job)   # a mesh was uploaded instead of photos (maybe zipped)
         log(job, 'no generation provider — waiting for a mesh upload (.glb/.fbx/.obj/.zip)')
         return unpack_if_zip(wait_for_upload(job, 'generate', MESH_EXT), job)
 
