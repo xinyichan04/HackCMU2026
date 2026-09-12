@@ -70,8 +70,42 @@ const canon = s => String(s).trim()
 
 /* ---------- three.js ---------- */
 const canvas   = $('gl');
-const renderer = new THREE.WebGLRenderer({ canvas, alpha:true, antialias:true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+/* WebGL is not guaranteed: Chrome with hardware acceleration off, a blocklisted GPU or a
+   headless/remote session all fail here. Probe first and say so in plain language, then fall
+   back to a 2D overlay that still proves the tracking half works. A raw stack trace helps
+   nobody. */
+function probeWebGL() {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (!gl) return 'the browser returned no WebGL context';
+    return null;
+  } catch (e) { return String(e && e.message || e); }
+}
+
+let renderer = null, glError = probeWebGL();
+if (!glError) {
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, alpha:true, antialias:true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  } catch (e) { glError = String(e && e.message || e); }
+}
+const MODE3D = !!renderer;
+let ctx2d = null;
+if (!MODE3D) {
+  ctx2d = canvas.getContext('2d');
+  const box = $('err');
+  box.style.display = 'block';
+  box.textContent =
+    'No WebGL — the 3D head cannot render in this browser.\n' +
+    `reason: ${glError}\n\n` +
+    'Running 2D fallback instead: tracking is live and drawn over the video, so you can see the ' +
+    'face mesh and the blendshapes firing — just not the .glb head.\n\n' +
+    'To get the 3D head: Chrome → Settings → System → turn on "Use graphics acceleration when ' +
+    'available", then relaunch. Check chrome://gpu — if it says "WebGL: Unavailable" that is the ' +
+    'cause. Safari also works.';
+}
 const scene  = new THREE.Scene();
 let   camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -5000, 5000);   // pixel space, set in resize()
 scene.add(new THREE.AmbientLight(0xffffff, 1.6));
@@ -84,7 +118,8 @@ headGroup.add(headPivot); scene.add(headGroup);
 
 function resize() {
   const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
+  if (renderer) renderer.setSize(w, h, false);
+  else { canvas.width = w * Math.min(devicePixelRatio,2); canvas.height = h * Math.min(devicePixelRatio,2); }
   camera.left = -w/2; camera.right = w/2; camera.top = h/2; camera.bottom = -h/2;
   camera.updateProjectionMatrix();
 }
@@ -93,16 +128,21 @@ addEventListener('resize', resize); resize();
 /* ---------- load the model ---------- */
 /* facecap.glb is gltfpack-compressed: it REQUIRES EXT_meshopt_compression and
    KHR_texture_basisu, so these two decoders must be wired or it will not open. */
-const ktx2 = new KTX2Loader()
-  .setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/')
-  .detectSupport(renderer);
-const loader = new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
+let loader = null;
+function getLoader() {
+  if (loader) return loader;
+  const ktx2 = new KTX2Loader()
+    .setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/')
+    .detectSupport(renderer);
+  loader = new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
+  return loader;
+}
 
 let morphMesh = null, morphIndex = new Map(), modelHeightPx = 1, wire = false;
 
 async function loadModel(url) {
   status('loading model…');
-  const gltf = await loader.loadAsync(url);
+  const gltf = await getLoader().loadAsync(url);
   const root = gltf.scene;
 
   // Normalise: centre the model on its own bounding box and scale to ~1 unit tall,
@@ -138,16 +178,29 @@ async function initTracking() {
   status('loading tracker…');
   const fileset = await FilesetResolver.forVisionTasks(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm');
-  landmarker = await FaceLandmarker.createFromOptions(fileset, {
+  // MediaPipe's GPU delegate is itself WebGL-backed, so on a machine with no WebGL it fails
+  // with `Service "kGpuService" ... required`. Try GPU, fall back to CPU rather than dying:
+  // slower, but tracking still runs and that is the half the user came to see.
+  const opts = delegate => ({
     baseOptions: {
       modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-      delegate: 'GPU',
+      delegate,
     },
     runningMode: 'VIDEO',
     numFaces: 1,
     outputFaceBlendshapes: true,
     outputFacialTransformationMatrixes: true,
   });
+  const first = MODE3D ? 'GPU' : 'CPU';
+  try {
+    landmarker = await FaceLandmarker.createFromOptions(fileset, opts(first));
+  } catch (e) {
+    if (first === 'CPU') throw e;
+    console.warn('GPU delegate failed, retrying on CPU:', e && e.message);
+    status('GPU tracker unavailable — retrying on CPU…');
+    landmarker = await FaceLandmarker.createFromOptions(fileset, opts('CPU'));
+  }
+  window.__delegate = landmarker ? first : null;
 }
 
 async function initCamera() {
@@ -180,6 +233,50 @@ function applyBlendshapes(categories) {
   }
   $('m-top').textContent = topVal > 0.15 ? `${topName} ${topVal.toFixed(2)}` : '—';
   return hit;
+}
+
+function screenMapper(vw, vh) {
+  const W = innerWidth, H = innerHeight;
+  const scale = Math.max(W / vw, H / vh);
+  const ox = (W - vw * scale) / 2, oy = (H - vh * scale) / 2;
+  return p => {
+    let x = p.x * vw * scale + ox;
+    if (MIRROR) x = W - x;
+    return { x, y: p.y * vh * scale + oy };
+  };
+}
+
+/* 2D fallback: no WebGL, but the tracking is the same tracking. Draw the mesh over the
+   video so the pipeline is visibly working, and show what the blendshapes are doing. */
+function draw2D(lm, shapes, vw, vh) {
+  const dpr = Math.min(devicePixelRatio, 2);
+  const g = ctx2d;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, innerWidth, innerHeight);
+  const to = screenMapper(vw, vh);
+
+  g.fillStyle = '#7fd7ff';
+  for (const p of lm) { const q = to(p); g.fillRect(q.x - 1, q.y - 1, 2, 2); }
+
+  const CONTOURS = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
+  if (CONTOURS) {
+    g.strokeStyle = 'rgba(138,180,255,0.28)'; g.lineWidth = 1; g.beginPath();
+    for (let i = 0; i < CONTOURS.length; i += 3) {          // thin it out; 2600 edges is soup
+      const e = CONTOURS[i], a = to(lm[e.start]), b = to(lm[e.end]);
+      g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
+    }
+    g.stroke();
+  }
+
+  const top = [...shapes].filter(c => c.categoryName !== '_neutral')
+                         .sort((a, b) => b.score - a.score).slice(0, 6);
+  g.font = '12px ui-monospace,Menlo,monospace';
+  top.forEach((c, i) => {
+    const y = 24 + i * 18, w = Math.round(c.score * 160);
+    g.fillStyle = '#1b2430'; g.fillRect(innerWidth - 250, y - 11, 170, 14);
+    g.fillStyle = '#8ab4ff'; g.fillRect(innerWidth - 250, y - 11, w, 14);
+    g.fillStyle = '#e6e9ef'; g.fillText(c.categoryName, innerWidth - 250 + 176, y);
+  });
 }
 
 function placeHead(lm, matrixData, vw, vh) {
@@ -225,17 +322,24 @@ function loop(video) {
     headPivot.visible = headGroup.visible = has && showHead;
     if (has) {
       const shapes = res.faceBlendshapes?.[0]?.categories || [];
-      const mapped = applyBlendshapes(shapes);
-      $('m-mapped').textContent = `${mapped}/51`;
-      placeHead(res.faceLandmarks[0],
-                res.facialTransformationMatrixes?.[0]?.data,
-                video.videoWidth, video.videoHeight);
+      if (MODE3D) {
+        const mapped = applyBlendshapes(shapes);
+        $('m-mapped').textContent = `${mapped}/51`;
+        placeHead(res.faceLandmarks[0],
+                  res.facialTransformationMatrixes?.[0]?.data,
+                  video.videoWidth, video.videoHeight);
+      } else {
+        draw2D(res.faceLandmarks[0], shapes, video.videoWidth, video.videoHeight);
+        $('m-mapped').textContent = `${shapes.length - 1} tracked (2D)`;
+      }
+    } else if (!MODE3D && ctx2d) {
+      ctx2d.setTransform(1,0,0,1,0,0); ctx2d.clearRect(0,0,canvas.width,canvas.height);
     }
   }
   const dt = t - lastT; lastT = t;
   fps = fps ? fps * 0.9 + (1000 / dt) * 0.1 : 1000 / dt;
   $('m-fps').textContent = fps.toFixed(0);
-  renderer.render(scene, camera);
+  if (MODE3D) renderer.render(scene, camera);
   requestAnimationFrame(() => loop(video));
 }
 
@@ -275,13 +379,18 @@ window.__selftest = () => {
 
 (async () => {
   try {
-    await loadModel(MODEL);
-    status('model ok — starting tracker');
+    if (MODE3D) {
+      await loadModel(MODEL);
+      status('model ok — starting tracker');
+    } else {
+      $('m-model').textContent = '2D fallback (no WebGL)';
+      status('no WebGL — starting tracker anyway');
+    }
     window.__modelReady = true;
     await initTracking();
     window.__trackerReady = true;
     const video = await initCamera();
-    status('live');
+    status(MODE3D ? 'live' : 'live — 2D fallback');
     loop(video);
   } catch (e) { status('failed'); fail(e); }
 })();
