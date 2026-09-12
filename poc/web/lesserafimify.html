@@ -459,17 +459,36 @@ const slots = MEMBERS.map((m, i) => new Slot(m, i));
    The model stays with its member; only the body binding moves — so swapping
    never means reloading a VRM, and YUNJIN stays YUNJIN. */
 let picked = null;
+let lineup = slots.map((_, i) => i);   // left-to-right order used by position mode
+function armLabel(s, on) {
+  s.chip.style.outline = on ? '2px solid #fff' : '';
+  s.chip.querySelector('.st').textContent =
+    on ? 'SWAP…' : (s.active ? 'LIVE' : 'waiting');
+}
 function pickChip(slot) {
-  if (picked === slot) { picked = null; slot.chip.style.outline = ''; return; }
-  if (!picked) { picked = slot; slot.chip.style.outline = '2px solid #fff'; return; }
+  if (picked === slot) { armLabel(slot, false); picked = null; return; }
+  if (!picked) { picked = slot; armLabel(slot, true); return; }
+  // Both halves matter: the tracking state is what first-come mode follows, the
+  // lineup is what position mode follows. Swapping only one leaves the other
+  // mode undoing the swap on its next frame.
   const keys = ['active','lastSeen','cx','cy','ovScale','lastPx'];
   for (const k of keys) { const t = picked[k]; picked[k] = slot[k]; slot[k] = t; }
+  const a = lineup.indexOf(picked.idx), b = lineup.indexOf(slot.idx);
+  if (a !== -1 && b !== -1) { lineup[a] = slot.idx; lineup[b] = picked.idx; }
   for (const s of [picked, slot]) {
     s.chip.classList.toggle('live', s.active);
     s.chip.querySelector('.st').textContent = s.active ? 'LIVE' : 'waiting';
   }
-  picked.chip.style.outline = ''; picked = null;
+  armLabel(picked, false); picked = null;
+  if (orderMode) showLineup();
 }
+// Clicking anywhere else cancels an armed chip, so a half-finished swap never
+// lingers and surprises the next click.
+addEventListener('pointerdown', e => {
+  if (picked && !e.target.closest('.chip')) { armLabel(picked, false); picked = null; }
+}, true);
+const showLineup = () => { $('tagline').textContent =
+  'POSITION ORDER · LEFT TO RIGHT = ' + lineup.map(i => slots[i].member.name).join(' → '); };
 
 /* ---------- body↔slot association: greedy nearest-hips matching ----------
    MediaPipe gives no stable person IDs across frames, so continuity is ours:
@@ -485,7 +504,10 @@ let orderMode = qs.get('order') === 'position';   // [p] toggles
 function assignByPosition(dets) {
   const order = dets.map((d, i) => i).sort((a, b) => dets[b].cx - dets[a].cx);
   const out = new Array(dets.length).fill(-1);
-  order.forEach((d, rank) => { if (rank < slots.length) out[d] = rank; });
+  // `lineup` — not slot order — decides who stands where, so a manual swap
+  // survives here. Deriving it from position alone would re-impose the default
+  // lineup on the very next frame and silently undo every swap.
+  order.forEach((d, rank) => { if (rank < lineup.length) out[d] = lineup[rank]; });
   return out;
 }
 
@@ -828,9 +850,7 @@ addEventListener('keydown', e => {
   if (e.key === 'p') {
     orderMode = !orderMode;
     for (const s of slots) s.setActive(false);   // re-deal cleanly on the next frame
-    $('tagline').textContent = orderMode
-      ? 'POSITION ORDER · LEFT TO RIGHT = ' + MEMBERS.map(m => m.name).join(' → ')
-      : LINEUP_LABEL;
+    if (orderMode) showLineup(); else $('tagline').textContent = LINEUP_LABEL;
   }
   if (e.key === 'l') {
     lmView = (lmView + 1) % 3;
