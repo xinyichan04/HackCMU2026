@@ -43,6 +43,31 @@ Reads `window.__RESULT` as JSON: `ok`, `names`, `missing[]`, `headNode`, `tris`,
 Measured on the generated test head: `{"ok":true,"names":51,"missing":[],"headNode":true,
 "tris":768,"jawOpenMaxDelta":0.0083,"influences":51}` on three.js r160.
 
+## `make_stylised_head_glb.py` — a stylised head with a rig that actually works
+
+```bash
+pip install pygltflib
+python3 poc/tools/make_stylised_head_glb.py poc/models3d/stylised-head.glb
+```
+
+2337 verts, 4480 tris, all 51 drivable ARKit morphs, one clean root node `head`, an embedded
+128×128 face map, Y-up, face on −Z. Passes `glb_inspect.py --rig-check` 51/51.
+
+The difference from `make_arkit51_glb.js`: that one is a **format donor** — a sphere whose 51
+"expressions" are deterministic bumps, perfect for unblocking a loader and proving nothing about
+anatomy. This one deforms the **correct region in the correct direction**: `jawOpen` drops the jaw,
+`eyeBlinkLeft` closes the subject's left eyelid, `mouthPucker` pushes the lips along −Z. So the
+tracker hookup can be verified by eye, not just by name.
+
+**What it is not:** finished character art, and not a likeness of any real person — deliberately.
+The project rule is stylised only, never a photoreal face-matched likeness of a real individual.
+Proportions are parametric, there is no hair geometry and no sculpted detail. It is a high-quality
+placeholder that exercises the whole pipeline while real art is made in VRoid Studio or Ready
+Player Me — then run the same validator against that.
+
+`SUBJECT_LEFT` is declared once at the top of the file and every paired morph is keyed off it, so
+the left/right convention is stated in exactly one place and cannot drift.
+
 ## `glb_inspect.py` — the same bar, headless
 
 ```bash
@@ -55,6 +80,12 @@ python3 poc/tools/glb_inspect.py poc/models3d/your.glb --json      # for CI
 that actually ships. This runs the same checks with no browser and no GPU, so it works over SSH and
 in CI, and it exits non-zero on failure. Use it to reject a model in seconds; use the HTML page to
 bless one.
+
+`--rig-check` answers the question names cannot: **where does each morph actually move the mesh?**
+A model can carry all 51 correct names and still blink the wrong eye — the single most common defect
+in an ARKit rig. For every `*Left`/`*Right` pair it reports the displacement centroid and fails the
+run if the subject's left shape deforms −X. Verified against a deliberately mirrored build: 36
+paired morphs flagged, exit 1. Compressed or sparse morphs are skipped, never failed.
 
 Checks: ARKit-51 parity after `_L`/`_R` normalisation · `mesh.extras.targetNames` survived export ·
 every drivable target actually displaces geometry · head bone or clean root · triangle budget ·

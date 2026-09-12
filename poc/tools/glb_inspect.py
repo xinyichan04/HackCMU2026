@@ -278,6 +278,69 @@ def inspect(path, max_tris=100000):
     return r
 
 
+def rig_check(path):
+    """Where does each paired morph actually move the mesh?
+
+    Names prove nothing about geometry. A model can carry all 51 correct names
+    and still blink the wrong eye, which is the single most common defect in
+    ARKit rigs. For every *Left/*Right pair this reports the displacement
+    centroid and flags it when the subject's left shape deforms -X.
+
+    Convention: face looks down -Z, +Y up, so the SUBJECT's left is +X.
+    Undecidable (compressed/sparse) morphs are skipped, never failed.
+    """
+    from pygltflib import GLTF2
+
+    with open(path, "rb") as fh:
+        magic = fh.read(4)
+    g = GLTF2().load_binary(str(path)) if magic == b"glTF" else GLTF2().load(str(path))
+    try:
+        blob = g.binary_blob() or b""
+    except Exception:
+        return []
+
+    def vec3(i):
+        a = g.accessors[i]
+        if a.bufferView is None or a.sparse is not None or a.type != "VEC3":
+            return None
+        bv = g.bufferViews[a.bufferView]
+        o = (bv.byteOffset or 0) + (a.byteOffset or 0)
+        st = bv.byteStride or 12
+        if o + (a.count - 1) * st + 12 > len(blob):
+            return None
+        return [struct.unpack_from("<3f", blob, o + k * st) for k in range(a.count)]
+
+    out = []
+    for mesh in g.meshes or []:
+        names = (mesh.extras or {}).get("targetNames") if isinstance(mesh.extras, dict) else None
+        if not names:
+            continue
+        for prim in mesh.primitives or []:
+            pos = vec3(prim.attributes.POSITION) if prim.attributes else None
+            if not pos:
+                continue
+            for i, tgt in enumerate(prim.targets or []):
+                if i >= len(names):
+                    break
+                name = names[i]
+                side = "left" if canon(name).endswith("left") else (
+                    "right" if canon(name).endswith("right") else None)
+                p = tgt.get("POSITION") if isinstance(tgt, dict) else getattr(tgt, "POSITION", None)
+                d = vec3(p) if p is not None else None
+                if not d:
+                    continue
+                w = sum(abs(c) for v in d for c in v)
+                if w < 1e-9:
+                    continue
+                wk = [sum(map(abs, v)) for v in d]
+                cx, cy, cz = (sum(pos[k][j] * wk[k] for k in range(len(d))) / w for j in range(3))
+                ok = None
+                if side and abs(cx) > 0.02:
+                    ok = (cx > 0) if side == "left" else (cx < 0)
+                out.append({"name": name, "cx": cx, "cy": cy, "cz": cz, "sideOk": ok})
+    return out
+
+
 def render(r, quiet=False):
     ok = r["ok"]
     print(f"{'PASS' if ok else 'FAIL'}  {Path(r['file']).name}")
@@ -310,6 +373,8 @@ def main():
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--quiet", action="store_true", help="errors and warnings only")
     ap.add_argument("--max-tris", type=int, default=100000)
+    ap.add_argument("--rig-check", action="store_true",
+                    help="report where each paired morph actually moves; catches mirrored L/R")
     args = ap.parse_args()
 
     if not args.model.exists():
@@ -324,7 +389,24 @@ def main():
         print(f"could not read {args.model.name}: {e}", file=sys.stderr)
         return 2
 
-    print(json.dumps(r, indent=2)) if args.json else render(r, quiet=args.quiet)
+    if args.rig_check:
+        r["rig"] = rig_check(args.model)
+        swapped = [x["name"] for x in r["rig"] if x["sideOk"] is False]
+        if swapped:
+            r["errors"].append(
+                f"{len(swapped)} morph(s) deform the WRONG side - left/right are mirrored: "
+                + ", ".join(swapped[:6])
+            )
+            r["ok"] = False
+
+    if args.json:
+        print(json.dumps(r, indent=2))
+    else:
+        render(r, quiet=args.quiet)
+        for x in r.get("rig", []):
+            mark = "ok " if x["sideOk"] is not False else "BAD"
+            print(f"  rig {mark} {x['name']:<20} centroid x={x['cx']:+.3f} "
+                  f"y={x['cy']:+.3f} z={x['cz']:+.3f}")
     return 0 if r["ok"] else 1
 
 
