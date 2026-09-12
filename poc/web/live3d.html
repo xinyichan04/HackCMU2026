@@ -171,7 +171,8 @@ function getLoader() {
   return loader;
 }
 
-let morphMesh = null, morphIndex = new Map(), modelHeightPx = 1, wire = false;
+let morphMesh = null, morphIndex = new Map(), wire = false;
+const ANCHOR = { eyeMid: new THREE.Vector3(0, 0, 0), interocular: 0.23, measured: false };
 
 async function loadModel(url) {
   status('loading model…');
@@ -180,13 +181,15 @@ async function loadModel(url) {
 
   // Normalise: centre the model on its own bounding box and scale to ~1 unit tall,
   // so any donor model can be dropped in without hand-tuned numbers.
+  // Scale FIRST, then translate by -mid*unit, so world = unit*(local - mid):
+  // the bbox centre lands exactly at the origin (not at mid*(unit-1)).
   const box  = new THREE.Box3().setFromObject(root);
   const size = box.getSize(new THREE.Vector3());
   const mid  = box.getCenter(new THREE.Vector3());
-  root.position.sub(mid);
   const unit = 1 / (size.y || 1);
   root.scale.multiplyScalar(unit);
-  modelHeightPx = 1;
+  root.position.copy(mid).multiplyScalar(-unit);
+  root.updateMatrixWorld(true);
 
   root.traverse(o => {
     if (o.isMesh) {
@@ -199,8 +202,58 @@ async function loadModel(url) {
   if (morphMesh) for (const [name, i] of Object.entries(morphMesh.morphTargetDictionary))
     morphIndex.set(canon(name), i);
 
+  // Measure the model's own eye anchors from the morph targets that actually move the eyelids,
+  // rather than guessing an offset from the bbox centre (which is nowhere near the eyes).
+  function morphCentroid(mesh, morphIdx) {
+    if (!mesh || morphIdx === undefined) return null;
+    const base  = mesh.geometry.attributes.position;
+    const delta = mesh.geometry.morphAttributes.position && mesh.geometry.morphAttributes.position[morphIdx];
+    if (!delta) return null;
+    const n = base.count;
+    let maxd = 0;
+    const mags = new Float32Array(n);
+    const dv = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      dv.fromBufferAttribute(delta, i);
+      const m = dv.length();
+      mags[i] = m;
+      if (m > maxd) maxd = m;
+    }
+    if (maxd === 0) return null;
+    const thresh = 0.2 * maxd;
+    const acc = new THREE.Vector3();
+    let count = 0;
+    const bv = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      if (mags[i] > thresh) {
+        bv.fromBufferAttribute(base, i);
+        acc.add(bv);
+        count++;
+      }
+    }
+    if (count === 0) return null;
+    acc.multiplyScalar(1 / count);
+    acc.applyMatrix4(mesh.matrixWorld);
+    return acc;
+  }
+
+  const eyeLIdx = morphMesh ? morphIndex.get(canon('eyeBlink_L')) : undefined;
+  const eyeRIdx = morphMesh ? morphIndex.get(canon('eyeBlink_R')) : undefined;
+  const eyeL = morphCentroid(morphMesh, eyeLIdx);
+  const eyeR = morphCentroid(morphMesh, eyeRIdx);
+  if (eyeL && eyeR) {
+    ANCHOR.eyeMid = eyeL.clone().add(eyeR).multiplyScalar(0.5);
+    ANCHOR.interocular = eyeL.distanceTo(eyeR);
+    ANCHOR.measured = true;
+  } else {
+    console.warn('live3d: eye morph anchors not measured (eyeBlink_L/eyeBlink_R missing or empty) — using fallback anchors');
+    ANCHOR.eyeMid = new THREE.Vector3(0, 0, 0);
+    ANCHOR.interocular = 0.23;
+    ANCHOR.measured = false;
+  }
+
   headPivot.add(root);
-  $('m-model').textContent = url.split('/').pop();
+  $('m-model').textContent = url.split('/').pop() + (ANCHOR.measured ? '' : ' (anchors: fallback)');
   return gltf;
 }
 
@@ -269,10 +322,9 @@ function applyBlendshapes(categories) {
   return hit;
 }
 
+let lastScale = 1, lastEyeDistPx = 0;
+
 function placeHead(lm, matrixData, vw, vh) {
-  // Position and size come from landmarks (robust, matches the video exactly);
-  // rotation comes from the 4x4 facial transform (MediaPipe's real head pose).
-  const noseTip = lm[1], leftT = lm[234], rightT = lm[454], chin = lm[152], brow = lm[10];
   const W = innerWidth, H = innerHeight;
 
   // video is object-fit:cover — replicate that mapping so overlay and video agree
@@ -284,21 +336,42 @@ function placeHead(lm, matrixData, vw, vh) {
     return { x, y: p.y * vh * scale + oy };
   };
 
-  const n = toScreen(noseTip), a = toScreen(leftT), b = toScreen(rightT),
-        c = toScreen(chin), d = toScreen(brow);
-  const faceH = Math.hypot(c.x - d.x, c.y - d.y);
+  // Tracked eye anchors: prefer iris centres (478-landmark output), fall back to eye corners.
+  const iL = lm[468], iR = lm[473];
+  const a = toScreen(iL !== undefined ? iL : lm[33]);
+  const b = toScreen(iR !== undefined ? iR : lm[263]);
+  const E = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const eyeDistPx = Math.hypot(b.x - a.x, b.y - a.y);
 
-  headGroup.position.set(n.x - W/2, -(n.y - H/2), 0);
-  const s = (faceH / modelHeightPx) * 1.35 * SCALE_K;      // model height ≈ 1 after normalisation
-  headGroup.scale.setScalar(s);
-
+  // Rotation, decoded first so scale/position can use it.
   if (matrixData) {
     mat.fromArray(matrixData);                              // column-major, as three expects
     mat.decompose(pos, quat, scl);
     const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
-    // mirrored view flips the sense of yaw and roll
-    headPivot.rotation.set(e.x, MIRROR ? -e.y : e.y, MIRROR ? -e.z : e.z);
+    // Mirrored view flips the sense of yaw and roll. That identity (M·R·M⁻¹ for M = diag(-1,1,1)
+    // negates yaw and roll, leaves pitch) holds in YXZ order, which is also the order the
+    // quaternion was decomposed in — so the order MUST be carried through. Object3D.rotation
+    // defaults to XYZ, and .set() without a 4th argument keeps it, which silently applied
+    // YXZ-derived angles as XYZ. Small error at small angles, wrong pose at large ones.
+    headPivot.rotation.set(e.x, MIRROR ? -e.y : e.y, MIRROR ? -e.z : e.z, 'YXZ');
   }
+
+  // Scale, from the measured interocular distance. Divide out the foreshortening from yaw
+  // so the model doesn't shrink as the user turns their head.
+  const cy = Math.max(Math.cos(headPivot.rotation.y), 0.5);
+  const s = ((eyeDistPx / cy) / ANCHOR.interocular) * SCALE_K;
+  headGroup.scale.setScalar(s);
+
+  // Position, so the model's own eyes (ANCHOR.eyeMid) land on the tracked eyes (E).
+  const off = ANCHOR.eyeMid.clone().applyEuler(headPivot.rotation).multiplyScalar(s);
+  headGroup.position.set(
+    (E.x - W/2) - off.x,
+    -(E.y - H/2) - off.y,
+    -off.z
+  );
+
+  lastScale = s; lastEyeDistPx = eyeDistPx;
+
   if (debugPose) $('m-face').textContent =
     `yaw ${(headPivot.rotation.y*57.3).toFixed(0)}° pitch ${(headPivot.rotation.x*57.3).toFixed(0)}°`;
 }
@@ -338,6 +411,7 @@ window.__pose = () => JSON.stringify({
   visible: headGroup.visible,
   pos: headGroup.position.toArray().map(v => +v.toFixed(1)),
   scale: +headGroup.scale.x.toFixed(2),
+  eyeDistPx: +lastEyeDistPx.toFixed(1),
   rotDeg: [headPivot.rotation.x, headPivot.rotation.y, headPivot.rotation.z].map(v => +(v * 57.2958).toFixed(1)),
   screen: [innerWidth, innerHeight],
   face: document.getElementById('m-face').textContent,
@@ -345,6 +419,23 @@ window.__pose = () => JSON.stringify({
   fps: document.getElementById('m-fps').textContent,
   top: document.getElementById('m-top').textContent,
 });
+
+window.__anchors = () => {
+  const root = headPivot.children[0];
+  let bboxCentreAfterNorm = [NaN, NaN, NaN], bboxSizeAfterNorm = [NaN, NaN, NaN];
+  if (root) {
+    const box = new THREE.Box3().setFromObject(root);
+    bboxCentreAfterNorm = box.getCenter(new THREE.Vector3()).toArray().map(v => +v.toFixed(5));
+    bboxSizeAfterNorm   = box.getSize(new THREE.Vector3()).toArray().map(v => +v.toFixed(5));
+  }
+  return JSON.stringify({
+    measured: ANCHOR.measured,
+    eyeMid: ANCHOR.eyeMid.toArray().map(v => +v.toFixed(5)),
+    interocular: +ANCHOR.interocular.toFixed(5),
+    bboxCentreAfterNorm,
+    bboxSizeAfterNorm,
+  });
+};
 
 window.__selftest = () => {
   const names = ['jawOpen','mouthSmileLeft','mouthSmileRight','eyeBlinkLeft','eyeBlinkRight',
