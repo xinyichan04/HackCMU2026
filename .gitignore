@@ -23,9 +23,12 @@ results/
 # generated face textures are real people's likenesses: keep them local
 poc/textures/
 poc/archive/textures/
-# third-party test avatars: re-fetch with poc/models3d/fetch.sh
-poc/models3d/*.glb
-poc/models3d/*.vrm
+# character models and the FBX/GLB they are built from: real people's likenesses,
+# and large. Third-party test avatars re-fetch with poc/models3d/fetch.sh;
+# member models rebuild from poc/models3d/sources/ via poc/tools/fbx_to_vrm.py.
+poc/models3d/**/*.glb
+poc/models3d/**/*.vrm
+poc/models3d/**/*.fbx
 
 # --- live_voice (RVC voice conversion) ---
 # Vendored third-party code, not ours to version

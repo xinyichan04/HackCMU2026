@@ -153,7 +153,10 @@ import { PoseLandmarker, FilesetResolver }
   from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs';
 
 const qs = new URLSearchParams(location.search);
-const MODEL = qs.get('model') || '../models3d/newmodel.vrm';
+/* Stand-in for members whose own model hasn't landed yet. Deliberately the
+   neutral VTuber, never a real member's likeness — a clone of someone who is
+   already on screen as herself is exactly the confusion this page must avoid. */
+const MODEL = qs.get('model') || '../models3d/vrm-sample.vrm';
 /* Tint strength for members still on the shared placeholder. It is deliberately
    strong: that model is already the WRONG person for four of the five, so
    preserving its likeness buys nothing, while telling five identical clones
@@ -167,10 +170,10 @@ const VOICE_BRIDGE = qs.get('voice') || 'http://127.0.0.1:8903';
    ?members=YUNJIN,SAKURA,... reorders the roster (which matters in position mode). */
 const MEMBERS_ALL = [
   { name: 'SAKURA',  color: 0xff9ad5, model: MODEL },
-  { name: 'CHAEWON', color: 0xb18cff, model: MODEL },
-  { name: 'YUNJIN',  color: 0xff5c7a, model: '../models3d/yunjin.vrm', own: true },
+  { name: 'CHAEWON', color: 0xb18cff, model: '../models3d/chaewon.vrm', own: true },
+  { name: 'YUNJIN',  color: 0xff5c7a, model: '../models3d/yunjin.vrm',  own: true },
   { name: 'KAZUHA',  color: 0x7dd0ff, model: MODEL },
-  { name: 'EUNCHAE', color: 0xffd166, model: MODEL },
+  { name: 'EUNCHAE', color: 0xffd166, model: '../models3d/eunchae.vrm', own: true },
 ];
 /* Only members with their OWN model are in play. Four clones of one character
    read as a bug, not a lineup — so a member joins the roster when her model
