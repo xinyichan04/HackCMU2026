@@ -112,6 +112,18 @@ class VoiceConverter:
             self.pitch, self.formant, resolved_model, resolved_index,
             index_rate, self.config,
         )
+        if not hasattr(self.rvc, "tgt_sr"):
+            # rtrvc.RVC.__init__ catches its own exceptions and just logs
+            # them (printt(traceback.format_exc())) rather than raising, so
+            # a failure here (e.g. a corrupted/unreadable index file) would
+            # otherwise surface as a confusing unrelated AttributeError a
+            # few lines down. Fail loudly with the actual likely cause.
+            raise RuntimeError(
+                f"Failed to initialize the RVC model (see the traceback printed above for the real "
+                f"cause). A common culprit is a corrupted or unreadable index file at "
+                f"{resolved_index!r} -- try --index-rate 0 to skip the index entirely, or pass a "
+                f"different --index path, to confirm whether that's the issue."
+            )
 
         device = self.config.device
         self.sample_rate = self._forced_sample_rate or self.rvc.tgt_sr
