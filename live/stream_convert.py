@@ -77,9 +77,27 @@ def run_live(converter: VoiceConverter, input_device, output_device) -> None:
         f"Streaming live: block={converter.block_frame} samples "
         f"(~{converter.block_time * 1000:.0f}ms) @ {converter.sample_rate} Hz. Ctrl+C to stop."
     )
-    stream = audio_io.build_stream(
-        audio_callback, converter.sample_rate, converter.block_frame, input_device, output_device,
-    )
+    try:
+        stream = audio_io.build_stream(
+            audio_callback, converter.sample_rate, converter.block_frame, input_device, output_device,
+        )
+    except Exception as exc:
+        # PortAudio reports device/format mismatches as bare error codes
+        # (-9997 invalid sample rate, -9998 invalid channel count), which give
+        # no hint that the fix is a different host API or rate. WASAPI in
+        # shared mode is the usual culprit: it is locked to the device's mix
+        # format, so it rejects both the model's 40 kHz rate and the mono
+        # channel count this pipeline uses. MME and DirectSound go through the
+        # Windows mixer, which converts, and accept both.
+        stop_event.set()
+        worker_thread.join(timeout=2)
+        raise RuntimeError(
+            f"Could not open the audio stream at {converter.sample_rate} Hz mono "
+            f"(input={input_device}, output={output_device}): {exc}\n"
+            "If this is PortAudio error -9997/-9998 on Windows, the device is refusing "
+            "the rate or the mono channel count. Pick a DirectSound or MME device from "
+            "--list-devices rather than a WASAPI one, and/or pass --sample-rate 48000."
+        ) from exc
     with stream:
         try:
             while True:
@@ -99,6 +117,11 @@ def main() -> int:
     parser.add_argument("--f0-method", choices=["pm", "rmvpe"], default="rmvpe")
     parser.add_argument("--index-rate", type=float, default=0.75)
     parser.add_argument("--nprobe", type=int, default=8, help="IVF clusters searched per retrieval query (higher = more reliable, still cheap).")
+    parser.add_argument("--sample-rate", type=int, default=None,
+                        help="Open the audio device at this rate instead of the model's own "
+                             "(40000 Hz for a 40k model). RVC's output is resampled to match, so "
+                             "use this when a device rejects the model rate -- e.g. WASAPI in "
+                             "shared mode, which is locked to the device's mix format.")
     parser.add_argument("--block-time", type=float, default=0.25, help="Chunk size in seconds (RVC's own default).")
     parser.add_argument("--crossfade-time", type=float, default=0.05, help="SOLA crossfade length in seconds.")
     parser.add_argument("--extra-time", type=float, default=2.5, help="Look-back context window in seconds.")
@@ -133,6 +156,7 @@ def main() -> int:
         pitch=args.pitch,
         index_rate=args.index_rate,
         nprobe=args.nprobe,
+        sample_rate=args.sample_rate,
     )
     converter.load(args.model or default_model_name(), args.index)
 
