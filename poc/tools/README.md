@@ -43,6 +43,42 @@ Reads `window.__RESULT` as JSON: `ok`, `names`, `missing[]`, `headNode`, `tris`,
 Measured on the generated test head: `{"ok":true,"names":51,"missing":[],"headNode":true,
 "tris":768,"jawOpenMaxDelta":0.0083,"influences":51}` on three.js r160.
 
+## `glb_inspect.py` — the same bar, headless
+
+```bash
+pip install pygltflib
+python3 poc/tools/glb_inspect.py poc/models3d/facecap.glb          # human-readable
+python3 poc/tools/glb_inspect.py poc/models3d/your.glb --json      # for CI
+```
+
+`verify_glb_threejs.html` is the real acceptance test — it proves the file loads in the renderer
+that actually ships. This runs the same checks with no browser and no GPU, so it works over SSH and
+in CI, and it exits non-zero on failure. Use it to reject a model in seconds; use the HTML page to
+bless one.
+
+Checks: ARKit-51 parity after `_L`/`_R` normalisation · `mesh.extras.targetNames` survived export ·
+every drivable target actually displaces geometry · head bone or clean root · triangle budget ·
+textures embedded · `extensionsRequired` that three.js will not open without extra loaders.
+
+Measured on the three test assets:
+
+| model | result | why |
+|---|---|---|
+| `facecap.glb` | **PASS 51/51** | `_L`/`_R` spelling, normalised. A strict check scores this 15/51 |
+| `arkit51-test-head.glb` | **PASS 51/51** | Apple camelCase, 768 tris |
+| `RobotExpressive.glb` | FAIL 0/51 | only `Angry`/`Sad`/`Surprised`; correct rejection |
+| `vrm-sample.vrm` | FAIL 0/51 | VRoid `Fcl_*` naming, 399 targets, 19 textures |
+
+Two traps it is deliberately built not to fall into, both of which reject a *good* model:
+
+- **Per-primitive zero morphs are legal.** glTF requires every primitive in a mesh to declare the
+  same number of targets, so a body primitive that does not move for `jawOpen` carries an all-zero
+  target by design. A target counts as dead only if it displaces nothing across the whole mesh.
+- **`tongueOut` is outside the drivable 51.** `facecap.glb` carries it flat. Nothing drives it, so
+  it is reported as a note, never a failure.
+
+`.vrm` is parsed too — the file type is chosen by magic bytes, not by extension.
+
 ## Naming
 
 Key morphs **by name, never by index**, and normalise before comparing: ARKit shapes appear both as
