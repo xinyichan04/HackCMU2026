@@ -191,7 +191,36 @@ In priority order:
      system; you drive expressions, not raw morph names. VRoid Studio exports ARKit-compatible
      shapes. Ready Player Me exports `.glb` with ARKit naming directly.
 2. **A head bone, or a clean root**, so head rotation can be applied separately from the face.
-3. **glTF conventions**: Y-up, facing −Z, textures embedded (that is what `.glb` buys over `.gltf`).
+3. **glTF conventions**: Y-up, **facing +Z**, textures embedded (that is what `.glb` buys over `.gltf`).
+
+   > **CORRECTED 2026-09-12 — this line previously said "facing −Z" and that was wrong.** It was
+   > taken on trust and it propagated into a generated model before anyone checked it.
+   >
+   > Measured from `poc/models3d/facecap.glb`, a real ARKit asset, by loading it in three.js and
+   > taking the world-space centroid of the vertices each morph actually displaces:
+   >
+   > ```
+   > eyeBlink_L   centroid x=+0.397 y=+0.251 z=+0.390
+   > eyeBlink_R   centroid x=-0.374 y=+0.277 z=+0.396
+   > noseSneer_L  centroid x=+0.226 y=-0.008 z=+0.561
+   > mouthSmile_L centroid x=+0.279 y=-0.426 z=+0.500
+   > ```
+   >
+   > Every facial feature sits at **positive z**, so the face looks down **+Z** — which is also what
+   > puts it toward three.js's default camera, since that camera looks down −Z. And the subject's
+   > left eye is at **+X**.
+   >
+   > **The two conventions are locked together — you cannot mix them.** Rotate that head 180° about
+   > Y so it faces −Z and every x flips: the subject's left eye lands at **−X**. So:
+   >
+   > | face direction | subject's left is at |
+   > |---|---|
+   > | **+Z** (correct, matches ARKit assets and three.js) | **+X** |
+   > | −Z | −X |
+   >
+   > Building a head that faces −Z while placing the subject's left at +X produces a **mirrored
+   > rig**: `eyeBlinkLeft` closes the model's anatomical *right* eye. Names cannot catch this, and
+   > it is the exact "blinks land on the wrong eye" symptom §3 warns about.
 4. **Budget**: under ~100k triangles, 1–2 textures.
 5. `.obj` is **not usable** — no rig, no morph targets, geometry only. `.fbx` works but needs
    conversion.
