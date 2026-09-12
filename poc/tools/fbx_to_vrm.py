@@ -47,6 +47,31 @@ meshes = [o for o in bpy.data.objects if o.type == 'MESH']
 print('armature:', armature.name, '| meshes:', [m.name for m in meshes])
 print('bones:', len(armature.data.bones))
 
+# --- unit normalization: Mixamo FBX is authored in centimeters, and the round-trip
+# can land the whole scene at 1/100 scale (measured: friend.vrm came out 0.018 m tall).
+# A human that isn't human-sized breaks every camera/framing assumption downstream,
+# so rescale to meters and BAKE it before the VRM export snapshots rest bone positions.
+def scene_height():
+    import mathutils
+    lo, hi = float('inf'), float('-inf')
+    for m in meshes:
+        for c in m.bound_box:
+            z = (m.matrix_world @ mathutils.Vector(c)).z
+            lo, hi = min(lo, z), max(hi, z)
+    return hi - lo
+h = scene_height()
+if h < 0.5:                      # nothing humanoid is half a meter tall — unit bug
+    factor = 100.0 if 0.005 < h < 0.05 else (1.8 / h)
+    for o in [armature] + meshes:
+        if o.parent is None:
+            o.scale = [s * factor for s in o.scale]
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    print(f'unit fix: height {h:.4f} m -> {scene_height():.3f} m (x{factor:g})')
+else:
+    print(f'height {h:.3f} m — no unit fix needed')
+
 # --- reattach texture if materials came through bare ---
 if TEXTURE:
     img = bpy.data.images.load(TEXTURE)
