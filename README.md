@@ -1,94 +1,54 @@
-# HackCMU2026 — "Be LE SSERAFIM" (POC)
+# Be LE SSERAFIM — HackCMU 2026 (Multiplayer track)
 
-Live camera → face landmarks → stylized LE SSERAFIM-inspired cartoon avatar, on a MacBook, no server.
-Output goes to a preview window, an OBS virtual camera (Zoom / FaceTime / OBS), and/or an MP4.
+Point a camera at you and your friends and everyone becomes a LE SSERAFIM member, live. Each person picks a
+member, the app finds every face in the frame and replaces it with that person's pick in real time, and the
+result can be recorded or sent to Zoom / FaceTime as a virtual camera. LE SSERAFIM is the launch character
+pack; the engine is character-agnostic, so any group or set of characters is a data drop, not a code change.
 
-The POC deliberately renders a **clearly stylized avatar**, not a photorealistic swap onto a real
-member's face. See `SPEC.md` (revision note at the top) for why and what changed.
+## Why it's interesting
 
-## Run
+Most face filters are one person, one effect, on a phone. This is a shared scene: several people in one
+frame, each mapped to a different character, identities staying put when people move, cross, or leave and
+come back. The hard parts are multi-face tracking, per-person identity assignment, and doing it fast enough
+on a laptop that it feels like a mirror rather than a video.
 
-```bash
-# once: Python 3.12 venv (mediapipe has no 3.13 wheels yet)
-/Users/felixlin/miniconda3/bin/python3.12 -m venv .venv
-./.venv/bin/pip install -r poc/requirements.txt
+## How it works
 
-# live preview (downloads the 3.7 MB landmarker model on first run)
-./.venv/bin/python poc/live.py --pack poc/packs/le-sserafim --character chaewon
+The camera feed goes through a loop that runs many times a second:
 
-# publish to Zoom / FaceTime (needs OBS installed once for its virtual camera driver)
-./.venv/bin/python poc/live.py --character chaewon --virtual-cam
+1. **Find faces.** A face detector returns every face in the frame with landmarks or key points.
+2. **Decide who is who.** Each detected face is matched to a player (by position now; by a face
+   "fingerprint" enrolled at the start in the full multiplayer version), and each player has a character.
+3. **Replace the face.** Three interchangeable renderers, each a different tradeoff:
+   - **Toon avatar** — landmarks drive a hand-drawn cartoon head (hair, eyes, mouth, accessories) defined
+     purely by data. Fully local, ~30 fps, clearly stylized. The default and the judged-demo path.
+   - **Photoreal one-shot swap** — a pretrained swapper takes one reference photo per character and
+     regenerates the face as that identity with the live expression. No training; one photo is the
+     character. Local on Apple Silicon at 5-20 fps depending on chip.
+   - **Reenactment** — the reverse: a still photo of the character is animated by the player's live
+     expressions (LivePortrait on Apple MLX). Zero training, no NVIDIA GPU.
+4. **Composite and output.** Watermarked frame → preview window, OBS virtual camera, or MP4.
 
-# record
-./.venv/bin/python poc/live.py --character chaewon --record demo.mp4
+No model is trained by us; everything runs from pretrained weights on the laptop. See `SPEC.md` for the
+design, `RESEARCH-finetune.md` for why we did not train per-character models, and the per-mode docs below.
 
-# offline: run on a clip instead of the camera
-./.venv/bin/python poc/live.py --source in.mp4 --record out.mp4 --no-preview
+## Repository map
 
-# up to 4 people in frame, each gets the next member in the pack
-./.venv/bin/python poc/live.py --max-faces 4
-```
+| Path | What |
+|---|---|
+| `poc/` | The live app: `live.py` (camera → track → render → output), `tracker.py`, `avatar.py` (toon), `swap.py` (photoreal), `packs/` (character data), `tests/` |
+| `poc/README.md` | How to install and run each mode, hotkeys, adding a character |
+| `SETUP.md`, `run-filter.sh`, `sources/` | Reenactment filter setup (FasterLivePortrait-MLX) |
+| `SPEC.md` | Proof-of-concept spec and revision notes |
+| `RESEARCH-finetune.md` | Survey of face-swap / fine-tuning options, costs and licences |
 
-Run it from Terminal.app (or iTerm) and grant it camera access when macOS asks. IDE sandboxes usually
-cannot open the camera.
+## Responsible use
 
-Hotkeys in the preview: `n`/`p` next/previous character, `r` start/stop recording, `e` toggle landmark
-smoothing, `d` debug mesh, `m` mirror, `q` quit.
+Outputs are always watermarked. The characters are real people; the photoreal and reenactment modes exist
+for the team's own experiments, and the public demo uses the stylized avatar. Reference photos are never
+committed. Pretrained swap models carry non-commercial research licences.
 
-## Photo mode (photoreal one-shot face swap)
+## Team
 
-`--mode photo` swaps a real face from a reference photo onto each tracked person instead of drawing a
-cartoon. Nothing is trained: InsightFace `buffalo_l` detects faces and computes a 512-d identity embedding,
-`inswapper_128` regenerates the face crop as the reference identity with the live pose/expression, and
-pastes it back. One photo per character; adding a character = a JSON entry + a photo.
-
-```bash
-./.venv/bin/pip install -r poc/requirements.txt            # adds insightface + onnxruntime (CoreML on macOS)
-mkdir -p poc/packs/le-sserafim/chaewon && cp ~/Pictures/chaewon.jpg poc/packs/le-sserafim/chaewon/ref.jpg
-./.venv/bin/python poc/live.py --mode photo --character chaewon
-./.venv/bin/python poc/live.py --mode photo --ref ~/Pictures/someone.jpg     # one-off reference, no pack edit
-./.venv/bin/python poc/live.py --mode photo --det-size 320 --detect-every 2  # faster on M1-M3
-./.venv/bin/python poc/live.py --mode photo --source in.mp4 --record out.mp4 --no-preview --enhance
-```
-
-First run downloads `inswapper_128.onnx` (554 MB) into `poc/models/` and insightface fetches `buffalo_l`
-(~300 MB). Reference photos: frontal, evenly lit, no heavy stage makeup, face ≥ 512 px; keep a few candidates
-and pick by eye. They are gitignored (`poc/packs/**/*.jpg|png`) because they are real people's likenesses;
-every teammate drops their own copies in locally. Expect roughly 5-10 fps on M1-M3 and 13-20 on M4 with
-CoreML at 720p for one face; `e` toggles the GFPGAN enhancer (needs `pip install gfpgan basicsr facexlib`,
-pulls torch, halves fps: use it for recordings, not live). `d` shows detector boxes. Output is watermarked
-"AI face swap". Licences: inswapper/ArcFace/RetinaFace are non-commercial research models.
-
-macOS camera gotcha: if the preview opens but the camera is black or "cannot open camera" with no permission
-prompt, a previous deny is cached; run `tccutil reset Camera com.apple.Terminal` and launch again.
-
-## Layout
-
-```
-poc/
-  live.py        camera / file → track → render → preview / virtual cam / MP4, hotkeys
-  tracker.py     MediaPipe Face Landmarker wrapper (478 landmarks, 52 blendshapes, pose, smoothing)
-  avatar.py      data-driven cartoon renderer (hair, bangs, eyes, brows, mouth, blush, accessories)
-  packs/le-sserafim/pack.json   five characters, all parameters, no code
-  models/        gitignored; face_landmarker.task is auto-downloaded
-  tests/         pytest: pack loading, tracking, rendering, speed, headless CLI + recording
-```
-
-Add a character by adding an object to `pack.json`:
-
-```json
-{ "id": "newbie", "name": "Newbie", "skin": "#F8DFCD", "hair": "#5A3B8C", "hair_style": "bob",
-  "bangs": "side", "eye": "#3A2A5A", "eye_shape": 0.6, "lip": "#E27A86", "blush": "#F7A6AC",
-  "accessories": ["glasses"] }
-```
-
-`hair_style`: long | bob | short | ponytail. `bangs`: full | side | none.
-`accessories`: star_clip | ribbon | cat_ears | glasses | heart | hoops.
-
-## Tests
-
-```bash
-./.venv/bin/python -m pytest poc/tests -q
-```
-
-Tests use a drawn synthetic face (`poc/tests/synth.py`) so they run without a camera or any real photo.
+CMU students, HackCMU 2026. Built in Python on Apple Silicon: MediaPipe, InsightFace, ONNX Runtime
+(CoreML), OpenCV, MLX.
