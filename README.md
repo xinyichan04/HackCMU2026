@@ -1,2 +1,67 @@
-# HackCMU2026
-le sserafim is so cute
+# HackCMU2026 — "Be LE SSERAFIM" (POC)
+
+Live camera → face landmarks → stylized LE SSERAFIM-inspired cartoon avatar, on a MacBook, no server.
+Output goes to a preview window, an OBS virtual camera (Zoom / FaceTime / OBS), and/or an MP4.
+
+The POC deliberately renders a **clearly stylized avatar**, not a photorealistic swap onto a real
+member's face. See `SPEC.md` (revision note at the top) for why and what changed.
+
+## Run
+
+```bash
+# once: Python 3.12 venv (mediapipe has no 3.13 wheels yet)
+/Users/felixlin/miniconda3/bin/python3.12 -m venv .venv
+./.venv/bin/pip install -r poc/requirements.txt
+
+# live preview (downloads the 3.7 MB landmarker model on first run)
+./.venv/bin/python poc/live.py --pack poc/packs/le-sserafim --character chaewon
+
+# publish to Zoom / FaceTime (needs OBS installed once for its virtual camera driver)
+./.venv/bin/python poc/live.py --character chaewon --virtual-cam
+
+# record
+./.venv/bin/python poc/live.py --character chaewon --record demo.mp4
+
+# offline: run on a clip instead of the camera
+./.venv/bin/python poc/live.py --source in.mp4 --record out.mp4 --no-preview
+
+# up to 4 people in frame, each gets the next member in the pack
+./.venv/bin/python poc/live.py --max-faces 4
+```
+
+Run it from Terminal.app (or iTerm) and grant it camera access when macOS asks. IDE sandboxes usually
+cannot open the camera.
+
+Hotkeys in the preview: `n`/`p` next/previous character, `r` start/stop recording, `e` toggle landmark
+smoothing, `d` debug mesh, `m` mirror, `q` quit.
+
+## Layout
+
+```
+poc/
+  live.py        camera / file → track → render → preview / virtual cam / MP4, hotkeys
+  tracker.py     MediaPipe Face Landmarker wrapper (478 landmarks, 52 blendshapes, pose, smoothing)
+  avatar.py      data-driven cartoon renderer (hair, bangs, eyes, brows, mouth, blush, accessories)
+  packs/le-sserafim/pack.json   five characters, all parameters, no code
+  models/        gitignored; face_landmarker.task is auto-downloaded
+  tests/         pytest: pack loading, tracking, rendering, speed, headless CLI + recording
+```
+
+Add a character by adding an object to `pack.json`:
+
+```json
+{ "id": "newbie", "name": "Newbie", "skin": "#F8DFCD", "hair": "#5A3B8C", "hair_style": "bob",
+  "bangs": "side", "eye": "#3A2A5A", "eye_shape": 0.6, "lip": "#E27A86", "blush": "#F7A6AC",
+  "accessories": ["glasses"] }
+```
+
+`hair_style`: long | bob | short | ponytail. `bangs`: full | side | none.
+`accessories`: star_clip | ribbon | cat_ears | glasses | heart | hoops.
+
+## Tests
+
+```bash
+./.venv/bin/python -m pytest poc/tests -q
+```
+
+Tests use a drawn synthetic face (`poc/tests/synth.py`) so they run without a camera or any real photo.
