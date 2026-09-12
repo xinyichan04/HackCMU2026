@@ -29,6 +29,16 @@ DEFAULT_MODEL = "nvidia/parakeet-tdt-0.6b-v2"
 # input, but mic capture is opened at this rate directly to avoid a resample.
 SAMPLE_RATE = 16000
 
+# Peak-normalize quiet input up to this level before recognition. Measured mic
+# capture under WSLg came in around -39.7 dBFS RMS (-20.8 dBFS peak), roughly
+# 15 dB below healthy speech level. Parakeet normalizes internally and handled
+# it fine in a quiet room, but that margin is what gets eaten by room noise in
+# a loud venue, so the gain is applied up front rather than relied upon.
+TARGET_PEAK = 0.9
+# Below this, a clip is treated as silence and left alone: scaling it up would
+# amplify only the noise floor and can turn a silent room into hallucinated text.
+SILENCE_FLOOR = 1e-3
+
 
 def load_model(name: str):
     # Imported lazily: `import nemo` pulls in a large dependency tree and
@@ -48,6 +58,40 @@ def audio_duration(path: Path) -> float:
 
     info = sf.info(str(path))
     return info.frames / info.samplerate
+
+
+def normalize(src: Path, dest: Path, quiet: bool = False) -> Path:
+    """Peak-normalize src into dest, returning whichever path to transcribe.
+
+    Returns src unchanged when the clip is effectively silent, or when it is
+    already loud enough that applying gain would only risk clipping.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    audio, sr = sf.read(str(src))
+    if audio.size == 0:
+        return src
+
+    peak = float(np.abs(audio).max())
+    if peak < SILENCE_FLOOR:
+        if not quiet:
+            print(f"Input is effectively silent (peak={peak:.2e}); skipping "
+                  "normalization.", file=sys.stderr)
+        return src
+    if peak >= TARGET_PEAK:
+        return src
+
+    gain = TARGET_PEAK / peak
+    rms_before = float(np.sqrt((audio ** 2).mean()))
+    sf.write(str(dest), audio * gain, sr)
+    if not quiet:
+        print(f"Normalized: peak {20 * np.log10(peak):.1f} -> "
+              f"{20 * np.log10(TARGET_PEAK):.1f} dBFS "
+              f"(RMS {20 * np.log10(rms_before):.1f} -> "
+              f"{20 * np.log10(rms_before * gain):.1f} dBFS, +{20 * np.log10(gain):.1f} dB)",
+              file=sys.stderr)
+    return dest
 
 
 def transcribe(model, paths: list[str]) -> list[str]:
@@ -136,7 +180,7 @@ def capture(seconds: float, source: str, dest: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
-def run_mic(model, seconds: float, source: str) -> int:
+def run_mic(model, seconds: float, source: str, do_normalize: bool = True) -> int:
     import numpy as np
     import soundfile as sf
 
@@ -152,8 +196,10 @@ def run_mic(model, seconds: float, source: str) -> int:
                   "The source opened but no signal reached it -- check that Windows "
                   "is not muting the mic for the WSL session.", file=sys.stderr)
 
+        target = normalize(wav, Path(tmp) / "norm.wav") if do_normalize else wav
+
         t0 = time.perf_counter()
-        text = transcribe(model, [str(wav)])[0]
+        text = transcribe(model, [str(target)])[0]
         elapsed = time.perf_counter() - t0
 
     print(f"\nlatency: {elapsed * 1000:.1f} ms for {seconds:.1f}s of audio "
@@ -175,6 +221,8 @@ def main() -> int:
                         help="PulseAudio source name (see --list-devices). "
                              "RDPSource is the WSLg microphone.")
     parser.add_argument("--list-devices", action="store_true")
+    parser.add_argument("--no-normalize", action="store_true",
+                        help="Skip peak normalization of quiet input.")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -186,17 +234,22 @@ def main() -> int:
     model = load_model(args.model)
 
     if args.mic:
-        return run_mic(model, args.seconds, args.source)
+        return run_mic(model, args.seconds, args.source, not args.no_normalize)
 
     path = Path(args.input).resolve()
     if not path.is_file():
         print(f"No such file: {path}", file=sys.stderr)
         return 1
 
-    if args.benchmark:
-        run_benchmark(model, path, args.runs)
-    else:
-        print(transcribe(model, [str(path)])[0])
+    with tempfile.TemporaryDirectory() as tmp:
+        # Normalized before branching so --benchmark times the same audio that
+        # a plain run would transcribe. The gain itself is applied once, here,
+        # and so stays outside the timed loop either way.
+        target = path if args.no_normalize else normalize(path, Path(tmp) / "norm.wav")
+        if args.benchmark:
+            run_benchmark(model, target, args.runs)
+        else:
+            print(transcribe(model, [str(target)])[0])
     return 0
 
 
