@@ -6,6 +6,14 @@ measured rather than documented are tagged.
 
 ---
 
+> **Update 2026-09-12:** §6.3's advice became the decision — tracking now runs **in the browser**
+> and the live consumer of your `.glb` is `poc/web/live3d.html` (it measures its own anchors at
+> load; nothing is tuned to a specific model). The python pipeline below still works but moved to
+> `poc/archive/` (paths already corrected in this doc); use it only for the JSONL replay trick in
+> §7 or offline checks. **Your deliverable is unchanged:** a `.glb` that passes
+> `poc/tools/glb_inspect.py`.
+
+
 ## 0. The one-paragraph version
 
 This repo already **produces the driving signal** for a 3D avatar: per frame, over UDP or JSONL, it
@@ -22,27 +30,27 @@ entirely and track in the browser)**.
 Branch `felix` is canonical. Python 3.12 venv at `./.venv` (mediapipe has no 3.13 wheels).
 
 ```
-poc/tracker.py    MediaPipe Face Landmarker wrapper. 478 landmarks, 52 blendshape
+poc/archive/tracker.py    MediaPipe Face Landmarker wrapper. 478 landmarks, 52 blendshape
                   categories, geometric head pose, optional temporal smoothing.
-poc/track.py      The probe + the data tap. Live OpenCV window; emits the JSON record
+poc/archive/track.py      The probe + the data tap. Live OpenCV window; emits the JSON record
                   over --udp-out / --jsonl-out. Also accepts --source udp:PORT as an
                   INPUT, so an iPhone running ARKit can replace the camera later.
-poc/bodytrack.py  33-point body pose (multi-person, world coords, segmentation mask)
+poc/archive/bodytrack.py  33-point body pose (multi-person, world coords, segmentation mask)
                   + 21-point hands. Same record, under "bodies" / "hands".
-poc/facepaint.py  Option (a): 2D texture warped onto the mesh. Unrelated to your work
+poc/archive/facepaint.py  Option (a): 2D texture warped onto the mesh. Unrelated to your work
                   except as the thing you are trying to beat on hair/silhouette.
 poc/assets/       canonical_face_model.obj — MediaPipe's 468-vertex mesh + UV layout.
                   NOT shipped in the mediapipe pip wheel; vendored here.
-poc/live.py       Older cartoon + inswapper face-swap modes. Not your path.
+poc/archive/live.py       Older cartoon + inswapper face-swap modes. Not your path.
 poc/tests/        9 pytest tests, camera-free (drawn synthetic face in synth.py).
 ```
 
 Run the tap:
 
 ```bash
-./.venv/bin/python poc/track.py --udp-out 127.0.0.1:9001 --no-landmarks-out
-./.venv/bin/python poc/track.py --jsonl-out /tmp/session.jsonl      # record for replay
-./.venv/bin/python poc/track.py --list-cameras                      # find the iPhone index
+./.venv/bin/python poc/archive/track.py --udp-out 127.0.0.1:9001 --no-landmarks-out
+./.venv/bin/python poc/archive/track.py --jsonl-out /tmp/session.jsonl      # record for replay
+./.venv/bin/python poc/archive/track.py --list-cameras                      # find the iPhone index
 ```
 
 Must be launched from an app that holds camera permission (Terminal.app / iTerm). An IDE terminal
@@ -159,7 +167,7 @@ units, no roll/yaw/pitch decomposition you can trust, and no translation at all.
 ### What to use instead
 
 MediaPipe will hand you a proper **4×4 facial transformation matrix**, and this repo currently has
-it switched off. In `poc/tracker.py`:
+it switched off. In `poc/archive/tracker.py`:
 
 ```python
 output_facial_transformation_matrixes=False,   # <- flip to True
@@ -302,7 +310,7 @@ frame triggers. Interpolate toward the latest values; do not block waiting for a
 The camera is a shared resource and needs a GUI session, so build against recorded data:
 
 ```bash
-./.venv/bin/python poc/track.py --jsonl-out /tmp/session.jsonl --no-landmarks-out   # record once
+./.venv/bin/python poc/archive/track.py --jsonl-out /tmp/session.jsonl --no-landmarks-out   # record once
 ```
 
 Then replay: read the lines, respect the `t` deltas, push them over UDP/WS at ~30 fps. **A replay
