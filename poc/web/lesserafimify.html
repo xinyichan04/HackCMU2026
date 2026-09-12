@@ -164,7 +164,7 @@ const VOICE_BRIDGE = qs.get('voice') || 'http://127.0.0.1:8903';
 const MEMBERS = [
   { name: 'SAKURA',  color: 0xff9ad5, model: MODEL },
   { name: 'CHAEWON', color: 0xb18cff, model: MODEL },
-  { name: 'YUNJIN',  color: 0xff5c7a, model: MODEL },
+  { name: 'YUNJIN',  color: 0xff5c7a, model: '../models3d/yunjin.vrm', own: true },
   { name: 'KAZUHA',  color: 0x7dd0ff, model: MODEL },
   { name: 'EUNCHAE', color: 0xffd166, model: MODEL },
 ];
@@ -276,8 +276,11 @@ class Slot {
     this.measureRest();
   }
 
-  /* Dummy-model differentiation: pull every non-face material toward the member color. */
+  /* Placeholder differentiation only: pull every non-face material toward the
+     member colour. A member with their OWN model is already themselves — tinting
+     it would only damage the likeness. */
   tint() {
+    if (this.member.own) return;
     const c = new THREE.Color(this.member.color);
     const skip = /face|skin|eye|iris|mouth|teeth|tongue|brow|lash|nose/i;
     this.vrm.scene.traverse(o => {
