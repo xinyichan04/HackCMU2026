@@ -6,6 +6,6 @@ pyvirtualcam>=0.15
 pytest
 # --mode photo (photoreal swap). onnxruntime's official macOS wheel includes the CoreML provider;
 # uninstall any old onnxruntime-silicon first. insightface may need Xcode CLT + cmake to build.
-insightface>=0.7.3
+insightface==0.7.3   # 2.0 pulls numpy 2.x and breaks the mediapipe numpy<2 pin (found on the Mac 09-11)
 onnxruntime>=1.17
 # optional, --enhance only (heavy: pulls torch): gfpgan basicsr facexlib
