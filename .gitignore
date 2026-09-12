@@ -18,3 +18,6 @@ sources/*
 results/
 # generated face textures are real people's likenesses: keep them local
 poc/textures/
+# third-party test avatars: re-fetch with poc/models3d/fetch.sh
+poc/models3d/*.glb
+poc/models3d/*.vrm
