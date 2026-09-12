@@ -100,6 +100,7 @@
 
 <div id="stage">
   <video id="cam" playsinline autoplay muted></video>
+  <canvas id="fx"></canvas>    <!-- stage lights: BEHIND the avatars, so DOM order matters -->
   <canvas id="gl"></canvas>
   <canvas id="lm2d"></canvas>
 </div>
@@ -124,7 +125,7 @@
   <button class="pbtn" id="vo-btn" hidden>start</button>
 </div>
 
-<div id="keys">[space] sserafimify · [p] position order · click 2 chips to swap · [l] landmarks · [h] avatars · [v] video · [d] debug · [m] mirror</div>
+<div id="keys">[space] sserafimify · [p] position order · [g] stage lights · click 2 chips to swap · [l] landmarks · [h] avatars · [v] video · [d] debug · [m] mirror</div>
 <div id="lmlegend" class="pill" style="bottom:auto; top:14px; right:14px; display:none;">
   <span>● tracked landmarks (numbered)</span><span id="lmlegend2" hidden>· ■ avatar bones</span>
 </div>
@@ -153,10 +154,13 @@ import { PoseLandmarker, FilesetResolver }
 
 const qs = new URLSearchParams(location.search);
 const MODEL = qs.get('model') || '../models3d/newmodel.vrm';
-/* Tint strength: a stylised placeholder can take a heavy wash, a photoreal
-   character cannot — it just looks dyed. ?tint=0..1 overrides. */
-const TINT = qs.has('tint') ? Math.max(0, Math.min(1, +qs.get('tint'))) : 0.22;
-const MAX_BODIES = 5;
+/* Tint strength for members still on the shared placeholder. It is deliberately
+   strong: that model is already the WRONG person for four of the five, so
+   preserving its likeness buys nothing, while telling five identical clones
+   apart at a glance buys everything. Members with their own model are exempt
+   (see Slot.tint). ?tint=0..1 overrides. */
+const TINT = qs.has('tint') ? Math.max(0, Math.min(1, +qs.get('tint'))) : 0.32;
+const MAX_BODIES = 5;   // the tracker always watches 5; how many get an avatar is the roster's size
 const VOICE_BRIDGE = qs.get('voice') || 'http://127.0.0.1:8903';
 
 /* The five. Members without their own model share the placeholder, tinted.
@@ -168,13 +172,25 @@ const MEMBERS_ALL = [
   { name: 'KAZUHA',  color: 0x7dd0ff, model: MODEL },
   { name: 'EUNCHAE', color: 0xffd166, model: MODEL },
 ];
+/* Only members with their OWN model are in play. Four clones of one character
+   read as a bug, not a lineup — so a member joins the roster when her model
+   lands, not before. ?placeholder=1 brings the shared stand-in back for the
+   rest (useful to test 5-body tracking before the other models exist). */
+const USE_PLACEHOLDER = qs.get('placeholder') === '1';
 const MEMBERS = (() => {
+  const pool = USE_PLACEHOLDER ? MEMBERS_ALL : MEMBERS_ALL.filter(m => m.own);
   const want = (qs.get('members') || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  if (!want.length) return MEMBERS_ALL;
-  const picked = want.map(n => MEMBERS_ALL.find(m => m.name === n)).filter(Boolean);
-  // Anything not named keeps its place at the back, so the roster is always five.
-  return [...picked, ...MEMBERS_ALL.filter(m => !picked.includes(m))];
+  if (!want.length) return pool;
+  const picked = want.map(n => pool.find(m => m.name === n)).filter(Boolean);
+  // Anything not named keeps its place at the back, so nobody silently vanishes.
+  return [...picked, ...pool.filter(m => !picked.includes(m))];
 })();
+
+/* Headline copy follows the real roster: promising five bodies while one member
+   is in play would be a lie on screen. */
+const LINEUP_LABEL = MEMBERS.length > 1
+  ? `UP TO ${MEMBERS.length} BODIES · ONE MEMBER EACH`
+  : `${MEMBERS[0].name} ONLY · MORE MEMBERS AS THEIR MODELS LAND`;
 
 const $ = id => document.getElementById(id);
 const fail = e => {
@@ -222,7 +238,7 @@ function resize() {
   orthoCam.left = -innerWidth/2; orthoCam.right = innerWidth/2;
   orthoCam.top = innerHeight/2;  orthoCam.bottom = -innerHeight/2;
   orthoCam.updateProjectionMatrix();
-  $('lm2d').width = innerWidth; $('lm2d').height = innerHeight;
+  for (const id of ['lm2d', 'fx']) { $(id).width = innerWidth; $(id).height = innerHeight; }
 }
 addEventListener('resize', resize); resize();
 
@@ -498,9 +514,50 @@ function assign(dets, now) {
 /* ---------- state + loop ---------- */
 let poseLm = null, revealed = false, showAvatars = true, debugOn = false;
 let lmView = 0;   // 0 off · 1 tracked landmarks · 2 landmarks + avatar bones
+let stageLights = qs.get('lights') !== '0';   // [g] toggles
 let bodiesNow = 0, fps = 0, lastT = performance.now();
 const clock = new THREE.Clock();
 const lmCtx = $('lm2d').getContext('2d');
+const fxCtx = $('fx').getContext('2d');
+
+/* ---------- stage light: the real "who is who" signal ----------
+   Four of the five members share one placeholder model, so a colour wash on the
+   mesh can only go so far before it dyes skin. A member-coloured spotlight pool
+   at the feet plus a soft column behind the body reads instantly at a glance,
+   survives any model swap, and looks like stage lighting rather than a bug. */
+function drawStageLight(s) {
+  const px = s.lastPx; if (!px || !px.hips) return;
+  const feet = px.ankles || { x: px.hips.x, y: px.hips.y + s.ovScale * 0.85 };
+  const c = new THREE.Color(s.member.color);
+  const rgb = `${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)}`;
+  const rx = Math.max(40, s.ovScale * 0.42), ry = rx * 0.30;
+
+  // pool on the floor
+  fxCtx.save();
+  fxCtx.translate(feet.x, feet.y + ry * 0.5);
+  fxCtx.scale(1, ry / rx);
+  const pool = fxCtx.createRadialGradient(0, 0, 0, 0, 0, rx);
+  pool.addColorStop(0,   `rgba(${rgb},0.55)`);
+  pool.addColorStop(0.6, `rgba(${rgb},0.22)`);
+  pool.addColorStop(1,   `rgba(${rgb},0)`);
+  fxCtx.fillStyle = pool;
+  fxCtx.beginPath(); fxCtx.arc(0, 0, rx, 0, 7); fxCtx.fill();
+  fxCtx.restore();
+
+  // column of light behind the body
+  const top = px.nose ? px.nose.y - s.ovScale * 0.25 : px.shoulders.y - s.ovScale * 0.4;
+  const col = fxCtx.createLinearGradient(0, top, 0, feet.y);
+  col.addColorStop(0,   `rgba(${rgb},0)`);
+  col.addColorStop(0.55,`rgba(${rgb},0.16)`);
+  col.addColorStop(1,   `rgba(${rgb},0.30)`);
+  fxCtx.fillStyle = col;
+  fxCtx.beginPath();
+  fxCtx.moveTo(px.hips.x - rx * 0.30, top);
+  fxCtx.lineTo(px.hips.x + rx * 0.30, top);
+  fxCtx.lineTo(feet.x + rx, feet.y + ry);
+  fxCtx.lineTo(feet.x - rx, feet.y + ry);
+  fxCtx.closePath(); fxCtx.fill();
+}
 
 /* ---------- landmark view: the fit-tuning instrument ----------
    Draws what the tracker actually sees (BlazePose's 33 points, numbered, in the
@@ -590,6 +647,7 @@ function processPose(res, vw, vh) {
 function loop(video) {
   const t = performance.now();
   lmCtx.clearRect(0, 0, innerWidth, innerHeight);
+  fxCtx.clearRect(0, 0, innerWidth, innerHeight);
   if (video.readyState >= 2 && poseLm)
     processPose(poseLm.detectForVideo(video, t), video.videoWidth, video.videoHeight);
   const dt = clock.getDelta();
@@ -597,6 +655,7 @@ function loop(video) {
     if (s.vrm) {
       s.vrm.scene.visible = revealed && showAvatars && s.active;
       s.vrm.update(dt);
+      if (revealed && s.active && stageLights) drawStageLight(s);
       if (lmView === 2 && s.active && revealed) drawBones(s);
     }
     s.updateTag();
@@ -618,7 +677,7 @@ function sserafimify() {
   if (revealed) {
     $('flash').classList.remove('go'); void $('flash').offsetWidth; $('flash').classList.add('go');
     b.textContent = 'DE-SSERAFIMIFY'; b.classList.add('small');
-    $('tagline').textContent = 'UP TO 5 BODIES · ONE MEMBER EACH';
+    $('tagline').textContent = LINEUP_LABEL;
     music.autostart();
   } else {
     b.textContent = 'LE SSERAFIMIFY!!'; b.classList.remove('small');
@@ -762,12 +821,13 @@ addEventListener('keydown', e => {
     e.preventDefault();   // no page scroll, no native focused-button double-fire
     if (!e.repeat && !$('bigbtn').disabled) sserafimify();
   }
+  if (e.key === 'g') stageLights = !stageLights;
   if (e.key === 'p') {
     orderMode = !orderMode;
     for (const s of slots) s.setActive(false);   // re-deal cleanly on the next frame
     $('tagline').textContent = orderMode
       ? 'POSITION ORDER · LEFT TO RIGHT = ' + MEMBERS.map(m => m.name).join(' → ')
-      : 'UP TO 5 BODIES · ONE MEMBER EACH';
+      : LINEUP_LABEL;
   }
   if (e.key === 'l') {
     lmView = (lmView + 1) % 3;
