@@ -40,8 +40,9 @@
   <div class="row"><span>legs</span><span id="m-legs">—</span></div>
   <div class="row"><span>fps</span><span id="m-fps">—</span></div>
   <div class="row"><span>mode</span><span id="m-mode">—</span></div>
+  <div class="row"><span>view</span><span id="m-view">stage</span></div>
 </div>
-<div id="keys">[h] hide avatar · [v] hide video · [m] mirror mode · [d] debug · wheel zoom</div>
+<div id="keys">[o] overlay · [h] hide avatar · [v] hide video · [m] mirror mode · [d] debug · wheel zoom</div>
 <div id="err"></div>
 <div id="note"></div>
 
@@ -109,6 +110,10 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(35, innerWidth/innerHeight, 0.1, 50);
 camera.position.set(0, 1.15, 2.6);
 camera.lookAt(0, 0.95, 0);
+// Overlay view draws in screen-pixel space — same trick as live3d.html's head placement,
+// now for the whole body: an orthographic camera whose units ARE window pixels.
+const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -5000, 5000);
+let overlayOn = false;
 scene.add(new THREE.AmbientLight(0xffffff, 1.6));
 const key = new THREE.DirectionalLight(0xffffff, 1.9); key.position.set(0.4, 0.8, 1); scene.add(key);
 const rim = new THREE.DirectionalLight(0x88aaff, 0.7); rim.position.set(-0.6, 0.2, -0.8); scene.add(rim);
@@ -117,9 +122,13 @@ function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
+  orthoCam.left = -innerWidth/2; orthoCam.right = innerWidth/2;
+  orthoCam.top = innerHeight/2;  orthoCam.bottom = -innerHeight/2;
+  orthoCam.updateProjectionMatrix();
 }
 addEventListener('resize', resize); resize();
 addEventListener('wheel', e => {
+  if (overlayOn) return;   // overlay size is owned by the tracker, not the wheel
   camera.position.z = Math.min(5, Math.max(1.2, camera.position.z + e.deltaY * 0.002));
 });
 
@@ -138,8 +147,28 @@ async function loadModel(url) {
   scene.add(vrm.scene);
   em = vrm.expressionManager || null;
   if (vrm.lookAt) vrm.lookAt.target = camera;   // meet the viewer's gaze
+  measureRest();
   $('m-model').textContent = url.split('/').pop() +
     ` (VRM${vrm.meta?.metaVersion ?? '?'}, ${em ? em.expressions.length : 0} expressions)`;
+}
+
+/* Rest-pose skeleton spans, measured once at load. Overlay scale is the ratio between
+   the SAME two anchor pairs seen in screen pixels (tracker) and in model units (here) —
+   the body-sized version of live3d's face-width matching. */
+const REST = { shoulderAnkle: 0, shoulderHip: 0, hipsOff: new THREE.Vector3(), measured: false };
+function measureRest() {
+  vrm.scene.updateWorldMatrix(true, true);
+  const wp = n => vrm.humanoid.getNormalizedBoneNode(n)?.getWorldPosition(new THREE.Vector3());
+  const ls = wp('leftUpperArm'), rs = wp('rightUpperArm'), hips = wp('hips');
+  if (!ls || !rs || !hips) return;   // overlay stays unavailable; stage mode unaffected
+  const sh = ls.clone().add(rs).multiplyScalar(0.5);
+  REST.shoulderHip = sh.distanceTo(hips);
+  const lf = wp('leftFoot'), rf = wp('rightFoot');
+  if (lf && rf) REST.shoulderAnkle = sh.distanceTo(lf.clone().add(rf).multiplyScalar(0.5));
+  // Where the hips bone sits relative to the scene root, so pinning hips→pixels is a
+  // subtraction, not an iteration. Scene root is at the origin when this runs.
+  REST.hipsOff.copy(hips).sub(vrm.scene.position);
+  REST.measured = true;
 }
 
 /* ---------- rig application (Kalidokit demo conventions, three-vrm v2 normalized bones) ----------
@@ -239,8 +268,10 @@ function applyPose(res, vw, vh) {
 
   rigRotation('Hips', rigged.Hips.rotation, 0.7, 0.3);
   // Side-shuffle follows the tracked hips; depth stays fixed so scale never swims.
+  // In overlay the pixel pin below owns ALL translation — adding the shuffle on top
+  // would count his lateral motion twice.
   const hipsNode = vrm.humanoid.getNormalizedBoneNode('hips');
-  if (hipsNode && rigged.Hips.position) {
+  if (hipsNode && rigged.Hips.position && !overlayOn) {
     const mx = MODE().swap ? -1 : 1;   // side-shuffle follows the mirror-feel bundle
     hipsNode.position.x += (rigged.Hips.position.x * mx - hipsNode.position.x) * 0.07;
   }
@@ -267,6 +298,62 @@ function applyPose(res, vw, vh) {
     for (const n of ['LeftUpperLeg','LeftLowerLeg','RightUpperLeg','RightLowerLeg'])
       rigRotation(n, NEUTRAL, 1, 0.1);
   }
+
+  if (overlayOn) placeOverlay(lm2d, vw, vh);
+}
+
+/* ---------- overlay: scale + pin the avatar onto the video body ----------
+   Scale: tracked shoulder-midpoint→ankle-midpoint distance in screen px (when the feet
+   are actually seen; shoulder→hip otherwise, torso is always in frame) divided by the
+   same span on the rest skeleton. Position: hips bone pinned to the tracked hips
+   midpoint. Both smoothed like the rig so breathing-level tracker noise doesn't shimmer
+   the whole body. */
+let ovScale = 0;
+const _v = new THREE.Vector3();
+function placeOverlay(lm, vw, vh) {
+  if (!REST.measured) return;
+  const W = innerWidth, H = innerHeight;
+  // video is object-fit:cover AND scaleX(-1) mirrored — replicate both (from live3d.html)
+  // so avatar and video pixels agree.
+  const cover = Math.max(W / vw, H / vh);
+  const ox = (W - vw * cover) / 2, oy = (H - vh * cover) / 2;
+  const toScreen = p => ({ x: W - (p.x * vw * cover + ox), y: p.y * vh * cover + oy });
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  if (!(lm[11] && lm[12] && lm[23] && lm[24])) return;
+  const sh = mid(toScreen(lm[11]), toScreen(lm[12]));
+  const hp = mid(toScreen(lm[23]), toScreen(lm[24]));
+
+  const ankleVis = Math.min(lm[27]?.visibility ?? 0, lm[28]?.visibility ?? 0);
+  let s;
+  if (REST.shoulderAnkle > 0 && ankleVis > 0.6) {
+    const an = mid(toScreen(lm[27]), toScreen(lm[28]));
+    s = Math.hypot(an.x - sh.x, an.y - sh.y) / REST.shoulderAnkle;
+  } else if (REST.shoulderHip > 0) {
+    s = Math.hypot(hp.x - sh.x, hp.y - sh.y) / REST.shoulderHip;
+  } else return;
+
+  const first = !ovScale;
+  ovScale = first ? s : ovScale + (s - ovScale) * 0.3;
+  vrm.scene.scale.setScalar(ovScale);
+  // Pixel space: origin at window centre, y up. Cancel the hips offset (scaled) so the
+  // hips BONE — not the scene root — lands on his hips; z pulls the bone onto the z=0 plane.
+  _v.set((hp.x - W/2) - REST.hipsOff.x * ovScale,
+         -(hp.y - H/2) - REST.hipsOff.y * ovScale,
+         -REST.hipsOff.z * ovScale);
+  if (first) vrm.scene.position.copy(_v);
+  else vrm.scene.position.lerp(_v, 0.3);
+  if (debugOn) $('m-view').textContent =
+    `overlay ×${ovScale.toFixed(0)} (${ankleVis > 0.6 ? 'feet' : 'torso'})`;
+}
+
+function setOverlay(on) {
+  overlayOn = on;
+  if (!on && vrm) {   // hand the stage back exactly as it was
+    vrm.scene.scale.setScalar(1);
+    vrm.scene.position.set(0, 0, 0);
+    ovScale = 0;
+  }
+  $('m-view').textContent = on ? 'overlay' : 'stage';
 }
 
 function loop(video) {
@@ -283,7 +370,7 @@ function loop(video) {
   const dt = t - lastT; lastT = t;
   fps = fps ? fps * 0.9 + (1000 / dt) * 0.1 : 1000 / dt;
   $('m-fps').textContent = fps.toFixed(0);
-  renderer.render(scene, camera);
+  renderer.render(scene, overlayOn ? orthoCam : camera);
   requestAnimationFrame(() => loop(video));
 }
 
@@ -331,6 +418,7 @@ async function initCamera() {
 
 /* ---------- keys ---------- */
 addEventListener('keydown', e => {
+  if (e.key === 'o') setOverlay(!overlayOn);
   if (e.key === 'h') showAvatar = !showAvatar;
   if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
   if (e.key === 'd') debugOn = !debugOn;
@@ -350,11 +438,28 @@ window.__selftest = () => JSON.stringify({
                 'leftUpperLeg','rightUpperLeg'].filter(b => vrm.humanoid.getNormalizedBoneNode(b)).length : 0,
   kalidokit: typeof Kalidokit !== 'undefined' ? Object.keys(Kalidokit).includes('Pose') : false,
   trackers: { face: !!faceLm, pose: !!poseLm },
+  overlay: { on: overlayOn, restMeasured: REST.measured,
+             shoulderHip: +REST.shoulderHip.toFixed(3), shoulderAnkle: +REST.shoulderAnkle.toFixed(3) },
 });
+
+// Feed synthetic landmarks through the real overlay path and report where the hips bone
+// actually landed (pixel space) vs. where the tracker said the hips were — lets the pin
+// be asserted without a camera. Landmarks: normalized {x,y,visibility} like the tracker's.
+window.__overlayProbe = (lm, vw, vh) => {
+  if (!vrm || !REST.measured) return null;
+  const wasOn = overlayOn; overlayOn = true; ovScale = 0;   // first-frame path: no lerp history
+  placeOverlay(lm, vw, vh);
+  vrm.scene.updateWorldMatrix(true, true);
+  const hips = vrm.humanoid.getNormalizedBoneNode('hips').getWorldPosition(new THREE.Vector3());
+  overlayOn = wasOn;
+  return JSON.stringify({ scale: +ovScale.toFixed(1),
+    hipsPx: { x: +(hips.x + innerWidth/2).toFixed(1), y: +(innerHeight/2 - hips.y).toFixed(1) } });
+};
 
 (async () => {
   try {
     await loadModel(MODEL);
+    if (qs.get('overlay') === '1') setOverlay(true);
     await initTracking();
     const video = await initCamera();
     status('running');
