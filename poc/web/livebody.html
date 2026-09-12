@@ -143,12 +143,14 @@ async function loadModel(url) {
 }
 
 /* ---------- rig application (Kalidokit demo conventions, three-vrm v2 normalized bones) ----------
-   Mirror mode is a genuine unknown until a human looks at it: MediaPipe's L/R labeling,
-   VRM1's +Z facing and Kalidokit's VRM0-era signs are three colliding conventions, and a
-   headless session cannot see which composition reads as a mirror. So both compositions are
-   implemented and [m] switches: ON swaps L/R bones + eyes and negates yaw/roll; OFF applies
-   Kalidokit's output verbatim. Whichever looks right becomes the shipped default. */
-let MIRRORED = true;
+   SETTLED BY FELIX'S EYES (2026-09-12): with the extra swap+negate applied, arms moved
+   inverted (up when he pointed down) and legs came out cross-mapped — exactly the signature
+   of mirroring twice. Kalidokit's output is already mirror-convention (it was built for
+   VTuber mirror setups), so the body path is now a direct passthrough. [m] still flips to
+   the double-transform composition for comparison, but direct is the verified default.
+   The head is NOT part of this: its mirror negation lives in applyFace, was proven on the
+   live3d page independently of Kalidokit, and [m] does not touch it. */
+let MIRRORED = false;
 const SWAP = { Left:'Right', Right:'Left' };
 const mirrorName = n => MIRRORED ? n.replace(/^(Left|Right)/, (_, s) => SWAP[s]) : n;
 const lower = s => s[0].toLowerCase() + s.slice(1);
@@ -181,7 +183,9 @@ function applyFace(res) {
   if (md) {
     const m = new THREE.Matrix4().fromArray(md);
     const e = new THREE.Euler().setFromRotationMatrix(m, 'YXZ');
-    const my = MIRRORED ? -1 : 1;
+    // Head mirror negation is fixed, not tied to [m]: this exact math was verified on the
+    // live3d page (negate yaw+roll, keep pitch — the identity only holds in YXZ order).
+    const my = -1;
     // Split across neck and head so the motion reads as a spine, not a bobblehead.
     _e.set(e.x * 0.35, e.y * 0.35 * my, e.z * 0.35 * my, 'YXZ');
     vrm.humanoid.getNormalizedBoneNode('neck')?.quaternion.slerp(_q.setFromEuler(_e), 0.35);
@@ -195,9 +199,11 @@ function applyFace(res) {
   if (em) {
     const sc = {};
     for (const c of res.faceBlendshapes?.[0]?.categories || []) sc[c.categoryName] = c.score;
+    // Blink swap stays fixed (not tied to [m]): it shipped swapped alongside the verified
+    // head mirroring and no wink problem has been reported against it.
     const bL = sc.eyeBlinkLeft ?? 0, bR = sc.eyeBlinkRight ?? 0;
-    em.setValue('blinkLeft',  MIRRORED ? bR : bL);
-    em.setValue('blinkRight', MIRRORED ? bL : bR);
+    em.setValue('blinkLeft',  bR);
+    em.setValue('blinkRight', bL);
     em.setValue('aa', Math.min(1, (sc.jawOpen ?? 0) * 1.4));
     em.setValue('happy', Math.min(1, ((sc.mouthSmileLeft ?? 0) + (sc.mouthSmileRight ?? 0)) * 0.5));
     em.setValue('surprised', Math.min(1, (sc.browInnerUp ?? 0) * 0.6));
@@ -314,9 +320,9 @@ addEventListener('keydown', e => {
   if (e.key === 'h') showAvatar = !showAvatar;
   if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
   if (e.key === 'd') debugOn = !debugOn;
-  if (e.key === 'm') { MIRRORED = !MIRRORED; $('m-mode').textContent = MIRRORED ? 'mirror' : 'direct'; }
+  if (e.key === 'm') { MIRRORED = !MIRRORED; $('m-mode').textContent = MIRRORED ? 'double-mirrored' : 'direct'; }
 });
-$('m-mode').textContent = 'mirror';
+$('m-mode').textContent = 'direct';
 
 window.__selftest = () => JSON.stringify({
   modelLoaded: !!vrm,
