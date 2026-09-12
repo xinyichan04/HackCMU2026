@@ -42,7 +42,7 @@
   <div class="row"><span>fps</span><span id="m-fps">—</span></div>
   <div class="row"><span>top shape</span><span id="m-top">—</span></div>
 </div>
-<div id="keys">[h] hide head · [v] hide video · [w] wireframe · [d] debug pose</div>
+<div id="keys">[h] hide head · [v] hide video · [w] wireframe · [d] debug pose · [ / ] size</div>
 <div id="err"></div>
 <div id="note"></div>
 
@@ -63,7 +63,7 @@ import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@m
 const qs       = new URLSearchParams(location.search);
 const MODEL    = qs.get('model')  || '../models3d/facecap.glb';
 const MIRROR   = qs.get('mirror') !== '0';
-const SCALE_K  = parseFloat(qs.get('scale') || '1.0');
+let SCALE_K    = parseFloat(qs.get('scale') || '1.0');   // '[' / ']' nudge it live
 
 const $ = id => document.getElementById(id);
 const status = s => { $('status').textContent = s; };
@@ -172,7 +172,7 @@ function getLoader() {
 }
 
 let morphMesh = null, morphIndex = new Map(), wire = false;
-const ANCHOR = { eyeMid: new THREE.Vector3(0, 0, 0), interocular: 0.23, measured: false };
+const ANCHOR = { eyeMid: new THREE.Vector3(0, 0, 0), interocular: 0.23, faceWidth: 0, measured: false };
 
 async function loadModel(url) {
   status('loading model…');
@@ -250,6 +250,25 @@ async function loadModel(url) {
     ANCHOR.eyeMid = new THREE.Vector3(0, 0, 0);
     ANCHOR.interocular = 0.23;
     ANCHOR.measured = false;
+  }
+
+  // Measure the head's frontal face width at eye height: x-extent of vertices in a band
+  // around the eyes' y, front half only (z > 0 excludes ears, which sit near mid-depth).
+  // Sizing by interocular alone undersizes the head when the donor's eye spacing is
+  // proportionally different from the user's; face width is what actually has to match.
+  if (morphMesh && ANCHOR.measured) {
+    const basePos = morphMesh.geometry.attributes.position;
+    const wv = new THREE.Vector3();
+    let minX = Infinity, maxX = -Infinity, nBand = 0;
+    for (let i = 0; i < basePos.count; i++) {
+      wv.fromBufferAttribute(basePos, i).applyMatrix4(morphMesh.matrixWorld);
+      if (Math.abs(wv.y - ANCHOR.eyeMid.y) <= 0.05 && wv.z > 0) {
+        if (wv.x < minX) minX = wv.x;
+        if (wv.x > maxX) maxX = wv.x;
+        nBand++;
+      }
+    }
+    if (nBand > 50 && maxX > minX) ANCHOR.faceWidth = maxX - minX;
   }
 
   headPivot.add(root);
@@ -356,10 +375,20 @@ function placeHead(lm, matrixData, vw, vh) {
     headPivot.rotation.set(e.x, MIRROR ? -e.y : e.y, MIRROR ? -e.z : e.z, 'YXZ');
   }
 
-  // Scale, from the measured interocular distance. Divide out the foreshortening from yaw
+  // Scale: match the model's measured frontal face width to the tracked face width
+  // (landmarks 234/454, the face-oval side points). Interocular matching kept as the
+  // fallback, but it undersizes the head whenever the donor's eye spacing is
+  // proportionally wider than the user's. Divide out the foreshortening from yaw
   // so the model doesn't shrink as the user turns their head.
   const cy = Math.max(Math.cos(headPivot.rotation.y), 0.5);
-  const s = ((eyeDistPx / cy) / ANCHOR.interocular) * SCALE_K;
+  let s;
+  if (ANCHOR.faceWidth > 0 && lm[234] && lm[454]) {
+    const fa = toScreen(lm[234]), fb = toScreen(lm[454]);
+    const faceWidthPx = Math.hypot(fb.x - fa.x, fb.y - fa.y);
+    s = ((faceWidthPx / cy) / ANCHOR.faceWidth) * SCALE_K;
+  } else {
+    s = ((eyeDistPx / cy) / ANCHOR.interocular) * SCALE_K;
+  }
   headGroup.scale.setScalar(s);
 
   // Position, so the model's own eyes (ANCHOR.eyeMid) land on the tracked eyes (E).
@@ -401,6 +430,10 @@ function loop(video) {
 
 addEventListener('keydown', e => {
   if (e.key === 'h') showHead = !showHead;
+  if (e.key === '[' || e.key === ']') {
+    SCALE_K = +(SCALE_K * (e.key === ']' ? 1.05 : 1 / 1.05)).toFixed(3);
+    $('m-top').textContent = `scale ×${SCALE_K}`;   // borrow the metric line to show it
+  }
   if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
   if (e.key === 'd') debugPose = !debugPose;
   if (e.key === 'w') { wire = !wire; scene.traverse(o => { if (o.isMesh) o.material.wireframe = wire; }); }
@@ -432,6 +465,7 @@ window.__anchors = () => {
     measured: ANCHOR.measured,
     eyeMid: ANCHOR.eyeMid.toArray().map(v => +v.toFixed(5)),
     interocular: +ANCHOR.interocular.toFixed(5),
+    faceWidth: +ANCHOR.faceWidth.toFixed(5),
     bboxCentreAfterNorm,
     bboxSizeAfterNorm,
   });
