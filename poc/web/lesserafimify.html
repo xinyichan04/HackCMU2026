@@ -152,7 +152,10 @@ import { PoseLandmarker, FilesetResolver }
   from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs';
 
 const qs = new URLSearchParams(location.search);
-const MODEL = qs.get('model') || '../models3d/vrm-sample.vrm';
+const MODEL = qs.get('model') || '../models3d/newmodel.vrm';
+/* Tint strength: a stylised placeholder can take a heavy wash, a photoreal
+   character cannot — it just looks dyed. ?tint=0..1 overrides. */
+const TINT = qs.has('tint') ? Math.max(0, Math.min(1, +qs.get('tint'))) : 0.22;
 const MAX_BODIES = 5;
 const VOICE_BRIDGE = qs.get('voice') || 'http://127.0.0.1:8903';
 
@@ -280,7 +283,7 @@ class Slot {
     this.vrm.scene.traverse(o => {
       if (!o.isMesh) return;
       for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
-        if (m && m.color && !skip.test(m.name || '')) { m.color.lerp(c, 0.45); this.tinted++; }
+        if (m && m.color && !skip.test(m.name || '')) { m.color.lerp(c, TINT); this.tinted++; }
       }
     });
   }
