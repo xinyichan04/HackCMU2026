@@ -8,9 +8,10 @@
     python poc/track.py --source udp:9000       # take ARKit data from an iPhone instead of a camera
     python poc/track.py --body --hands          # add 33-point body + 21-point hand tracking
     python poc/track.py --body --segmentation   # also compute the person cutout mask
+    python poc/track.py --texture poc/packs/le-sserafim/chaewon/texture.png   # wear a face
 
 Hotkeys: m mesh, l landmarks, b blendshape bars, p pose axes, i ids, k skeleton, g mask,
-         n joint names, q quit, s save a PNG.
+         n joint names, t texture, q quit, s save a PNG.
 
 Two sources, one output format:
   camera  MediaPipe Face Landmarker - multi-face, 478 landmarks, 52 blendshapes inferred from RGB.
@@ -192,6 +193,16 @@ def main(argv=None):
     ap.add_argument("--segmentation", action="store_true", help="with --body: person cutout mask")
     ap.add_argument("--max-bodies", type=int, default=2)
     ap.add_argument("--max-hands", type=int, default=4)
+    ap.add_argument("--texture", default=None, metavar="PNG",
+                    help="warp this canonical-UV face texture onto every tracked face "
+                         "(build one with facepaint.py --from-photo)")
+    ap.add_argument("--texture-alpha", type=float, default=1.0, help="0..1 blend of the texture")
+    ap.add_argument("--feather", type=int, default=9, help="edge softness of the painted face, px")
+    ap.add_argument("--trim-forehead", type=float, default=0.0, metavar="0..0.9",
+                    help="crop the top of the painted face; fixes a fringe ghosting from the "
+                         "reference photo onto the forehead")
+    ap.add_argument("--no-color-match", action="store_true",
+                    help="skip matching the texture's lighting to the frame")
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--no-smoothing", action="store_true", help="raw landmarks, no temporal EMA")
     ap.add_argument("--udp-out", default=None, metavar="HOST:PORT", help="stream tracking JSON per frame")
@@ -245,6 +256,14 @@ def main(argv=None):
             if args.hands:
                 hand_tracker = HandTracker(max_hands=args.max_hands)
 
+    painter = None
+    if args.texture:
+        from facepaint import FacePainter  # noqa: E402
+        painter = FacePainter(args.texture, feather=args.feather, alpha=args.texture_alpha,
+                              color_match=not args.no_color_match,
+                              trim_forehead=args.trim_forehead)
+        print(f"wearing {args.texture} ({len(painter.tris)} triangles); press t to toggle")
+
     sink = None
     if args.udp_out:
         host, port = args.udp_out.rsplit(":", 1)
@@ -252,10 +271,13 @@ def main(argv=None):
         print(f"streaming tracking JSON to udp://{host}:{port}")
     jsonl = open(args.jsonl_out, "a") if args.jsonl_out else None
 
-    show = {"mesh": True, "landmarks": False, "shapes": True, "pose": True, "ids": True,
-            "skeleton": True, "mask": args.segmentation, "joints": False}
+    # With a texture on, the mesh and pose overlays are just clutter over the painted face.
+    show = {"mesh": not painter, "landmarks": False, "shapes": True, "pose": not painter,
+            "ids": True, "skeleton": True, "mask": args.segmentation, "joints": False,
+            "texture": bool(painter)}
     fps_ema, t_prev, frame_i, out = 0.0, time.monotonic(), 0, None
-    print("tracking. keys: m mesh, l landmarks, b bars, p pose, i ids, s save, q quit")
+    paint_ms = 0.0
+    print("tracking. keys: m mesh, l landmarks, b bars, p pose, i ids, t texture, s save, q quit")
     try:
         while True:
             faces_out: list[dict] = []
@@ -295,6 +317,12 @@ def main(argv=None):
                             draw_hand(frame, hd, PALETTE[(i + 2) % len(PALETTE)])
                         hands_out.append(hand_record(hd, i))
                 faces = tracker.track(frame, ts)
+                if painter and show["texture"] and faces:
+                    t_paint = time.perf_counter()
+                    for f in faces:
+                        painter.render(frame, f.pts)
+                    ms = (time.perf_counter() - t_paint) * 1000
+                    paint_ms = 0.8 * paint_ms + 0.2 * ms if paint_ms else ms
                 for i, f in enumerate(faces):
                     draw_face(frame, f, i, show)
                     faces_out.append(record(f, i))
@@ -313,6 +341,8 @@ def main(argv=None):
             if hand_tracker:
                 hud += f"  |  hands {len(hands_out)}"
             hud += f"  |  {fps_ema:4.1f} fps"
+            if painter and show["texture"]:
+                hud += f"  |  paint {paint_ms:.0f} ms"
             if faces_out and faces_out[0]["blendshapes"]:
                 hud += "  |  52 blendshapes"
             draw_hud(frame, hud)
@@ -361,6 +391,8 @@ def main(argv=None):
                     show["mask"] = not show["mask"]
                 if k == ord("n"):
                     show["joints"] = not show["joints"]
+                if k == ord("t") and painter:
+                    show["texture"] = not show["texture"]
                 if k == ord("s"):
                     name = f"track-{int(time.time())}.png"
                     cv2.imwrite(name, frame)

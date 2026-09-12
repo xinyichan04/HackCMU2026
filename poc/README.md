@@ -59,6 +59,37 @@ CoreML at 720p for one face; `e` toggles the GFPGAN enhancer (needs `pip install
 pulls torch, halves fps: use it for recordings, not live). `d` shows detector boxes. Output is watermarked
 "AI face swap". Licences: inswapper/ArcFace/RetinaFace are non-commercial research models.
 
+## Texture mode (wear a real face on the tracked mesh)
+
+`facepaint.py` warps a face texture onto the 468-point mesh, triangle by triangle, in MediaPipe's
+canonical UV layout. No renderer, no model download, no 128 px bottleneck: it is a photograph being
+warped, so it is photoreal, it follows *your* expression, and it costs ~14 ms a frame.
+
+```bash
+# a photo you have -> a canonical-UV texture (tracks the photo and inverse-warps it)
+./.venv/bin/python poc/facepaint.py --from-photo sources/chaewon.jpg --out poc/packs/le-sserafim/chaewon/texture.png
+
+# wear it live, 30 fps
+./.venv/bin/python poc/track.py --texture poc/packs/le-sserafim/chaewon/texture.png
+
+# reference photo had a fringe and hair is ghosting onto your forehead? crop the top
+./.venv/bin/python poc/track.py --texture ...png --trim-forehead 0.18
+
+# paint by hand instead: a wireframe of the UV layout to work inside
+./.venv/bin/python poc/facepaint.py --uv-template /tmp/uv.png
+```
+
+`t` toggles the texture live; `--texture-alpha`, `--feather` and `--no-color-match` tune the blend
+(colour match shifts the texture's LAB mean/std toward the frame so a studio-lit photo does not sit
+on a dim webcam face like a sticker).
+
+The canonical model (`poc/assets/canonical_face_model.obj`, 468 verts / 898 tris / UVs) is **not in
+the mediapipe pip wheel** — it is vendored here from the MediaPipe repo.
+
+Limits, honestly: this paints the *face*, so hair, ears and the silhouette are still yours — those
+live outside the mesh and need the `.glb` + real-renderer path. It also needs a roughly frontal face,
+same as the tracker.
+
 macOS camera gotcha: if the preview opens but the camera is black or "cannot open camera" with no permission
 prompt, a previous deny is cached; run `tccutil reset Camera com.apple.Terminal` and launch again.
 
@@ -69,6 +100,10 @@ poc/
   live.py        camera / file → track → render → preview / virtual cam / MP4, hotkeys
   tracker.py     MediaPipe Face Landmarker wrapper (478 landmarks, 52 blendshapes, pose, smoothing)
   avatar.py      data-driven cartoon renderer (hair, bangs, eyes, brows, mouth, blush, accessories)
+  track.py       tracking probe: live window + JSON/UDP out, camera or ARKit-over-UDP source
+  bodytrack.py   33-point body pose (multi-person, world coords, segmentation) + 21-point hands
+  facepaint.py   photo -> canonical-UV texture, and texture -> warped onto the tracked mesh
+  assets/        vendored canonical_face_model.obj — the UV layout (not in the pip wheel)
   packs/le-sserafim/pack.json   five characters, all parameters, no code
   models/        gitignored; face_landmarker.task is auto-downloaded
   tests/         pytest: pack loading, tracking, rendering, speed, headless CLI + recording

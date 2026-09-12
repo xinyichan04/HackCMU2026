@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from avatar import AvatarRenderer, Pack
+from facepaint import OVAL, FacePainter, load_canonical, photo_to_texture
 from synth import synthetic_face
 from tracker import FaceTracker
 
@@ -86,6 +87,58 @@ def test_render_speed(tracker):
         renderer.render(base.copy(), face, pack.characters[0])
     ms = (time.perf_counter() - t) / n * 1000
     assert ms < 40, f"render {ms:.1f} ms/frame"
+
+
+def test_canonical_model_matches_the_landmark_topology():
+    tris, uv = load_canonical()
+    assert tris.shape == (898, 3)
+    assert tris.max() < 468, "triangles must index into the 468 mesh landmarks"
+    assert set(np.unique(tris)) == set(range(468)), "every mesh vertex should be used"
+    assert uv.shape == (468, 2) and uv.min() >= 0.0 and uv.max() <= 1.0
+
+
+def test_texture_roundtrip_paints_the_face_and_nothing_else(tracker, tmp_path):
+    """Bake a recognisably-tinted face into a texture, then check it lands back on the mesh."""
+    base = synthetic_face()
+    face = settled(tracker, base, 4000)[0]
+    tinted = base.copy()
+    tinted[:, :, 1] = 0                                # kill the green channel
+    tris, uv = load_canonical()
+    tex = photo_to_texture(tinted, face.pts, tris, uv, size=512)
+    assert (cv2.cvtColor(tex, cv2.COLOR_BGR2GRAY) > 0).mean() > 0.25, "UV square barely filled"
+
+    path = tmp_path / "tex.png"
+    cv2.imwrite(str(path), tex)
+    out = FacePainter(path, feather=5, color_match=False).render(base.copy(), face.pts)
+
+    # compare inside the face oval only - a bounding box is mostly background, which dilutes it
+    inside = np.zeros(base.shape[:2], dtype=np.uint8)
+    cv2.fillConvexPoly(inside, cv2.convexHull(face.pts[OVAL].astype(np.int32)), 255)
+    sel = inside > 0
+    assert out[:, :, 1][sel].mean() < base[:, :, 1][sel].mean() - 60
+
+    x0, y0, x1, y1 = face.bbox
+    untouched = base.copy()
+    untouched[max(y0 - 40, 0):y1 + 40, max(x0 - 40, 0):x1 + 40] = 0
+    got = out.copy()
+    got[max(y0 - 40, 0):y1 + 40, max(x0 - 40, 0):x1 + 40] = 0
+    assert np.array_equal(got, untouched), "painting escaped the face bounding box"
+
+
+def test_paint_speed(tracker, tmp_path):
+    base = synthetic_face()
+    face = settled(tracker, base, 5000)[0]
+    tris, uv = load_canonical()
+    path = tmp_path / "tex.png"
+    cv2.imwrite(str(path), photo_to_texture(base, face.pts, tris, uv, size=512))
+    painter = FacePainter(path)
+    painter.render(base.copy(), face.pts)              # warm up
+    n = 10
+    t = time.perf_counter()
+    for _ in range(n):
+        painter.render(base.copy(), face.pts)
+    ms = (time.perf_counter() - t) / n * 1000
+    assert ms < 33, f"paint {ms:.1f} ms/frame leaves no room for tracking at 30 fps"
 
 
 def test_live_cli_on_video_file(tmp_path):
