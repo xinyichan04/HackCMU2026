@@ -1,0 +1,32 @@
+<!doctype html><meta charset="utf-8"><title>glb verify</title>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const EXPECT = `browDownLeft browDownRight browInnerUp browOuterUpLeft browOuterUpRight cheekPuff cheekSquintLeft cheekSquintRight eyeBlinkLeft eyeBlinkRight eyeLookDownLeft eyeLookDownRight eyeLookInLeft eyeLookInRight eyeLookOutLeft eyeLookOutRight eyeLookUpLeft eyeLookUpRight eyeSquintLeft eyeSquintRight eyeWideLeft eyeWideRight jawForward jawLeft jawOpen jawRight mouthClose mouthDimpleLeft mouthDimpleRight mouthFrownLeft mouthFrownRight mouthFunnel mouthLeft mouthLowerDownLeft mouthLowerDownRight mouthPressLeft mouthPressRight mouthPucker mouthRight mouthRollLower mouthRollUpper mouthShrugLower mouthShrugUpper mouthSmileLeft mouthSmileRight mouthStretchLeft mouthStretchRight mouthUpperUpLeft mouthUpperUpRight noseSneerLeft noseSneerRight`.split(/\s+/);
+try {
+  const loader = new GLTFLoader();
+  const gltf = await loader.loadAsync(new URLSearchParams(location.search).get('model') || '../models3d/arkit51-test-head.glb');
+  let mesh = null, headNode = null;
+  gltf.scene.traverse(o => { if (o.isMesh && o.morphTargetDictionary) mesh = o; if (o.name === 'head') headNode = o; });
+  const dict = mesh ? mesh.morphTargetDictionary : {};
+  const got = Object.keys(dict);
+  const missing = EXPECT.filter(n => !(n in dict));
+  // drive a morph and confirm the vertex data actually moves
+  let moved = null;
+  if (mesh) {
+    const attr = mesh.geometry.morphAttributes.position;
+    const jaw = dict['jawOpen'];
+    moved = (jaw !== undefined && attr && attr[jaw]) ? Math.max(...Array.from(attr[jaw].array).map(Math.abs)) : null;
+  }
+  window.__RESULT = JSON.stringify({
+    ok: missing.length === 0, loaded: !!mesh, names: got.length, missing,
+    headNode: !!headNode, tris: mesh ? mesh.geometry.index.count/3 : null,
+    jawOpenMaxDelta: moved, influences: mesh ? mesh.morphTargetInfluences.length : null,
+    threeVersion: THREE.REVISION
+  });
+} catch (e) { window.__RESULT = JSON.stringify({error: String(e && e.message || e)}); }
+</script>

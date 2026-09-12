@@ -1,0 +1,51 @@
+# Tools — making and checking a `.glb` without any 3D software
+
+Two files. Both are stdlib-only: no Blender, no glTF library, no GUI, no venv.
+
+## `make_arkit51_glb.js` — writes a `.glb` from scratch
+
+```bash
+node poc/tools/make_arkit51_glb.js poc/models3d/arkit51-test-head.glb
+```
+
+Emits a plain glTF 2.0 binary carrying **all 51 drivable ARKit morph targets** (see
+`AVATAR3D-HANDOFF.md` §3 — ARKit's 52 minus `tongueOut`, which MediaPipe never emits), spelled in
+Apple camelCase, with `mesh.extras.targetNames` present so the names survive into three.js as
+`morphTargetDictionary`.
+
+A `.glb` is a 12-byte header + a JSON chunk + a binary chunk. That is the whole container — which
+is why writing one needs no tooling at all.
+
+**What it is for:** unblocking the renderer, the tracking hookup and the validator *before* any
+character art exists. It is a **format donor**, not a character: the mesh is a sphere and the 51
+"expressions" are deterministic bumps on the +Z hemisphere. Every target carries a real non-zero
+displacement on purpose — a zero-filled morph passes a name check while proving nothing at runtime.
+
+Deliberately plain: **no Draco, no meshopt, no KTX2.** For contrast, the `facecap.glb` test asset is
+gltfpack-compressed and lists `KHR_mesh_quantization`, `EXT_meshopt_compression` and
+`KHR_texture_basisu` in `extensionsRequired` — so it will not load in three.js until `MeshoptDecoder`
+and `KTX2Loader` are wired up. Worth knowing before you blame your own code.
+
+## `verify_glb_threejs.html` — the acceptance test
+
+The bar for any model is: **loads in three.js, and all 51 names resolve by name.** This page checks
+exactly that and nothing else.
+
+```bash
+# serve the repo (any static server); then open:
+#   verify_glb_threejs.html?model=../models3d/your-model.glb
+python3 -m http.server 8899        # from the repo root, for example
+```
+
+Reads `window.__RESULT` as JSON: `ok`, `names`, `missing[]`, `headNode`, `tris`,
+`jawOpenMaxDelta`, `influences`. Drive it headlessly over CDP if you want it in CI.
+
+Measured on the generated test head: `{"ok":true,"names":51,"missing":[],"headNode":true,
+"tris":768,"jawOpenMaxDelta":0.0083,"influences":51}` on three.js r160.
+
+## Naming
+
+Key morphs **by name, never by index**, and normalise before comparing: ARKit shapes appear both as
+Apple's `mouthSmileLeft` and as the `_L`/`_R` suffix that Blender, Unreal and Live Link emit. A
+strict equality check scores `facecap.glb` 15/51 and rejects a perfectly good model. See
+`poc/models3d/README.md`.
