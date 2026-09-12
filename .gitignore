@@ -11,3 +11,8 @@ poc/models/
 poc/packs/**/*.jpg
 poc/packs/**/*.jpeg
 poc/packs/**/*.png
+# cindy-tryout: reenactment source portraits, same rule
+sources/*
+!sources/.gitkeep
+!sources/README.md
+results/
