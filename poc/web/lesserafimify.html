@@ -101,6 +101,7 @@
 <div id="stage">
   <video id="cam" playsinline autoplay muted></video>
   <canvas id="gl"></canvas>
+  <canvas id="lm2d"></canvas>
 </div>
 
 <div id="wordmark">LE&nbsp;SSERAFIMIFY</div>
@@ -123,7 +124,10 @@
   <button class="pbtn" id="vo-btn" hidden>start</button>
 </div>
 
-<div id="keys">[space] sserafimify · [h] avatars · [v] video · [d] debug · [m] mirror mode</div>
+<div id="keys">[space] sserafimify · [l] landmarks · [h] avatars · [v] video · [d] debug · [m] mirror mode</div>
+<div id="lmlegend" class="pill" style="bottom:auto; top:14px; right:14px; display:none;">
+  <span>● tracked landmarks (numbered)</span><span id="lmlegend2" hidden>· ■ avatar bones</span>
+</div>
 <div id="hud"></div>
 <div id="err"></div>
 <div id="note"></div>
@@ -208,6 +212,7 @@ function resize() {
   orthoCam.left = -innerWidth/2; orthoCam.right = innerWidth/2;
   orthoCam.top = innerHeight/2;  orthoCam.bottom = -innerHeight/2;
   orthoCam.updateProjectionMatrix();
+  $('lm2d').width = innerWidth; $('lm2d').height = innerHeight;
 }
 addEventListener('resize', resize); resize();
 
@@ -366,6 +371,11 @@ class Slot {
     const sh = mid(toScreen(lm[11]), toScreen(lm[12]));
     const hp = mid(toScreen(lm[23]), toScreen(lm[24]));
 
+    // Keep this frame's anchor pixels so the fit can be measured (see __fitReport).
+    this.lastPx = { shoulders: sh, hips: hp,
+      nose: lm[0] ? toScreen(lm[0]) : null,
+      ankles: (lm[27] && lm[28]) ? mid(toScreen(lm[27]), toScreen(lm[28])) : null };
+
     const ankleVis = Math.min(lm[27]?.visibility ?? 0, lm[28]?.visibility ?? 0);
     let s;
     if (this.rest.shoulderAnkle > 0 && ankleVis > 0.6) {
@@ -442,8 +452,69 @@ function assign(dets, now) {
 
 /* ---------- state + loop ---------- */
 let poseLm = null, revealed = false, showAvatars = true, debugOn = false;
+let lmView = 0;   // 0 off · 1 tracked landmarks · 2 landmarks + avatar bones
 let bodiesNow = 0, fps = 0, lastT = performance.now();
 const clock = new THREE.Clock();
+const lmCtx = $('lm2d').getContext('2d');
+
+/* ---------- landmark view: the fit-tuning instrument ----------
+   Draws what the tracker actually sees (BlazePose's 33 points, numbered, in the
+   claiming member's color) through the SAME cover+mirror transform the overlay
+   uses — so a gap between a dot and the avatar's limb IS the mapping error,
+   not a projection artifact. Level 2 adds squares where the avatar's humanoid
+   bones currently sit, to compare directly. */
+const POSE_LINKS = [
+  [11,12],[11,13],[13,15],[12,14],[14,16],          // shoulders + arms
+  [11,23],[12,24],[23,24],                           // torso
+  [23,25],[25,27],[24,26],[26,28],                   // legs
+  [27,29],[29,31],[27,31],[28,30],[30,32],[28,32],   // feet
+  [15,17],[17,19],[15,19],[15,21],[16,18],[18,20],[16,20],[16,22], // hands
+  [0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],[9,10],          // face
+];
+const BONE_MARKS = ['hips','spine','chest','neck','head',
+  'leftUpperArm','leftLowerArm','leftHand','rightUpperArm','rightLowerArm','rightHand',
+  'leftUpperLeg','leftLowerLeg','leftFoot','rightUpperLeg','rightLowerLeg','rightFoot'];
+
+function drawLandmarks(lm, vw, vh, colorHex) {
+  const W = innerWidth, H = innerHeight;
+  const cover = Math.max(W / vw, H / vh);
+  const ox = (W - vw * cover) / 2, oy = (H - vh * cover) / 2;
+  const px = p => ({ x: W - (p.x * vw * cover + ox), y: p.y * vh * cover + oy });
+  lmCtx.strokeStyle = colorHex + 'aa'; lmCtx.lineWidth = 2;
+  lmCtx.beginPath();
+  for (const [a, b] of POSE_LINKS) {
+    const A = lm[a], B = lm[b];
+    if (!A || !B || (A.visibility ?? 0) < 0.4 || (B.visibility ?? 0) < 0.4) continue;
+    const pa = px(A), pb = px(B);
+    lmCtx.moveTo(pa.x, pa.y); lmCtx.lineTo(pb.x, pb.y);
+  }
+  lmCtx.stroke();
+  lmCtx.font = '9px ui-monospace,Menlo,monospace';
+  for (let i = 0; i < lm.length; i++) {
+    if ((lm[i]?.visibility ?? 0) < 0.4) continue;
+    const p = px(lm[i]);
+    lmCtx.fillStyle = colorHex;
+    lmCtx.beginPath(); lmCtx.arc(p.x, p.y, 3.5, 0, 7); lmCtx.fill();
+    lmCtx.fillStyle = '#ffffffee';
+    lmCtx.fillText(i, p.x + 5, p.y - 4);
+  }
+}
+
+function drawBones(slot) {
+  const c = '#' + slot.member.color.toString(16).padStart(6, '0');
+  slot.vrm.scene.updateWorldMatrix(true, true);
+  lmCtx.font = '9px ui-monospace,Menlo,monospace';
+  for (const name of BONE_MARKS) {
+    const node = slot.vrm.humanoid.getNormalizedBoneNode(name);
+    if (!node) continue;
+    const p = node.getWorldPosition(_v);
+    const x = p.x + innerWidth/2, y = innerHeight/2 - p.y;   // ortho px space → screen
+    lmCtx.fillStyle = c; lmCtx.strokeStyle = '#fff';
+    lmCtx.fillRect(x - 3.5, y - 3.5, 7, 7); lmCtx.strokeRect(x - 3.5, y - 3.5, 7, 7);
+    lmCtx.fillStyle = '#ffffffcc';
+    lmCtx.fillText(name, x + 6, y + 3);
+  }
+}
 
 function processPose(res, vw, vh) {
   const now = performance.now();
@@ -458,6 +529,9 @@ function processPose(res, vw, vh) {
   const chosen = assign(dets, now);
   for (let d = 0; d < dets.length; d++) {
     const si = chosen[d];
+    if (lmView > 0)
+      drawLandmarks(res.landmarks[dets[d].i], vw, vh,
+        si === -1 ? '#9fb0c5' : '#' + slots[si].member.color.toString(16).padStart(6, '0'));
     if (si === -1) continue;
     const s = slots[si], det = dets[d];
     s.setActive(true);
@@ -470,6 +544,7 @@ function processPose(res, vw, vh) {
 
 function loop(video) {
   const t = performance.now();
+  lmCtx.clearRect(0, 0, innerWidth, innerHeight);
   if (video.readyState >= 2 && poseLm)
     processPose(poseLm.detectForVideo(video, t), video.videoWidth, video.videoHeight);
   const dt = clock.getDelta();
@@ -477,6 +552,7 @@ function loop(video) {
     if (s.vrm) {
       s.vrm.scene.visible = revealed && showAvatars && s.active;
       s.vrm.update(dt);
+      if (lmView === 2 && s.active && revealed) drawBones(s);
     }
     s.updateTag();
   }
@@ -641,6 +717,11 @@ addEventListener('keydown', e => {
     e.preventDefault();   // no page scroll, no native focused-button double-fire
     if (!e.repeat && !$('bigbtn').disabled) sserafimify();
   }
+  if (e.key === 'l') {
+    lmView = (lmView + 1) % 3;
+    $('lmlegend').style.display = lmView ? 'flex' : 'none';
+    $('lmlegend2').hidden = lmView !== 2;
+  }
   if (e.key === 'h') showAvatars = !showAvatars;
   if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
   if (e.key === 'd') { debugOn = !debugOn; $('hud').style.display = debugOn ? 'block' : 'none'; }
@@ -653,8 +734,26 @@ window.__selftest = () => JSON.stringify({
     restMeasured:s.rest.measured, active:s.active })),
   kalidokit: typeof Kalidokit !== 'undefined' && !!Kalidokit.Pose,
   tracker: !!poseLm, maxBodies: MAX_BODIES,
-  revealed, musicTracks: music.tracks.length, voice: voice.st,
+  revealed, lmView, musicTracks: music.tracks.length, voice: voice.st,
 });
+/* Fit report: for each active body, the pixel gap between a tracked landmark and
+   the avatar bone that is supposed to sit on it. This is the number we tune. */
+window.__fitReport = () => JSON.stringify(slots.filter(s => s.active && s.vrm).map(s => {
+  s.vrm.scene.updateWorldMatrix(true, true);
+  const bone = n => { const b = s.vrm.humanoid.getNormalizedBoneNode(n); if (!b) return null;
+    const p = b.getWorldPosition(new THREE.Vector3());
+    return { x: p.x + innerWidth/2, y: innerHeight/2 - p.y }; };
+  const gap = (a, b) => (a && b) ? +Math.hypot(a.x - b.x, a.y - b.y).toFixed(1) : null;
+  // Compare like with like: the avatar anchors are the same midpoints the tracker
+  // reports (upper-arm pair ↔ landmarks 11/12, foot pair ↔ 27/28).
+  const pairMid = (a, b) => { const p = bone(a), q = bone(b);
+    return (p && q) ? { x:(p.x + q.x)/2, y:(p.y + q.y)/2 } : null; };
+  return { member: s.member.name, scale: +s.ovScale.toFixed(1),
+    hipsGap: gap(bone('hips'), s.lastPx?.hips),
+    shoulderGap: gap(pairMid('leftUpperArm','rightUpperArm'), s.lastPx?.shoulders),
+    headGap: gap(bone('head'), s.lastPx?.nose),
+    ankleGap: gap(pairMid('leftFoot','rightFoot'), s.lastPx?.ankles) };
+}));
 /* Feed N synthetic bodies through the real assignment+overlay path (no camera needed). */
 window.__multiProbe = (bodies, vw, vh) => {
   const was = revealed; revealed = true;
