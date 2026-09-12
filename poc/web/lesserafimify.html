@@ -123,7 +123,7 @@
   <button class="pbtn" id="vo-btn" hidden>start</button>
 </div>
 
-<div id="keys">[h] avatars · [v] video · [d] debug · [m] mirror mode</div>
+<div id="keys">[space] sserafimify · [h] avatars · [v] video · [d] debug · [m] mirror mode</div>
 <div id="hud"></div>
 <div id="err"></div>
 <div id="note"></div>
@@ -506,7 +506,12 @@ function sserafimify() {
     music.stop();
   }
 }
-$('bigbtn').addEventListener('click', sserafimify);
+$('bigbtn').addEventListener('click', () => {
+  sserafimify();
+  // Drop focus so the spacebar binding below is the ONLY space handler —
+  // a focused button would also natively re-fire click on space.
+  $('bigbtn').blur();
+});
 
 /* ---------- music: plays whatever mp3s are dropped into poc/web/music/ ----------
    python http.server directory listings are parseable HTML — good enough for a
@@ -534,16 +539,25 @@ const music = {
     $('mu-next').addEventListener('click', () => this.next());
     $('mu-vol').addEventListener('input', e => audio.volume = e.target.value / 100);
   },
+  _ok() {
+    this.started = true;
+    $('mu-lamp').classList.add('on');
+    $('mu-name').textContent = decodeURIComponent(this.tracks[this.i].split('/').pop());
+    $('mu-play').textContent = '⏸';
+  },
   play(k) {
     this.i = (k + this.tracks.length) % this.tracks.length;
     const audio = $('bgm');
     audio.src = this.tracks[this.i];
-    audio.play().then(() => {
-      this.started = true;
-      $('mu-lamp').classList.add('on');
-      $('mu-name').textContent = decodeURIComponent(this.tracks[this.i].split('/').pop());
-      $('mu-play').textContent = '⏸';
-    }).catch(() => {});
+    audio.play().then(() => this._ok()).catch(err => {
+      // Autoplay blocked (or a transient load hiccup): say so instead of
+      // failing silently, and retry on the very next interaction.
+      console.warn('music play blocked:', err);
+      $('mu-name').textContent = 'music blocked — press any key or click';
+      const kick = () => audio.play().then(() => this._ok()).catch(() => {});
+      addEventListener('pointerdown', kick, { once: true });
+      addEventListener('keydown', kick, { once: true });
+    });
   },
   toggle() {
     const audio = $('bgm');
@@ -623,6 +637,10 @@ async function initCamera() {
 
 /* ---------- keys ---------- */
 addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    e.preventDefault();   // no page scroll, no native focused-button double-fire
+    if (!e.repeat && !$('bigbtn').disabled) sserafimify();
+  }
   if (e.key === 'h') showAvatars = !showAvatars;
   if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
   if (e.key === 'd') { debugOn = !debugOn; $('hud').style.display = debugOn ? 'block' : 'none'; }
