@@ -17,12 +17,16 @@
 set -euo pipefail
 
 WIN_REPO="${WIN_REPO:-C:\\Users\\jxie0\\OneDrive\\Desktop\\Projects\\HackCMU2026}"
-# powershell.exe is reachable from WSL via the interop path but is not always
-# on PATH, so fall back to the absolute location rather than failing.
-PWSH="$(command -v powershell.exe || echo /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)"
+# cmd.exe rather than powershell.exe: git writes ordinary progress ("From
+# https://...", "Switched to branch ...") to stderr, and PowerShell turns any
+# native stderr output into a NativeCommandError, which aborts the run and
+# hides the real result. cmd.exe passes it through untouched. It is reachable
+# from WSL via interop but is not always on PATH, so fall back to the absolute
+# location rather than failing.
+CMD="$(command -v cmd.exe || echo /mnt/c/Windows/system32/cmd.exe)"
 
-if [ ! -x "$PWSH" ]; then
-  echo "Could not find powershell.exe -- is this running inside WSL?" >&2
+if [ ! -x "$CMD" ]; then
+  echo "Could not find cmd.exe -- is this running inside WSL?" >&2
   exit 1
 fi
 
@@ -42,13 +46,21 @@ git push origin "$BRANCH"
 echo "==> Updating Windows clone at $WIN_REPO"
 # --ff-only so a diverged Windows checkout fails loudly here instead of
 # producing a surprise merge commit in a clone nobody edits directly.
-"$PWSH" -NoProfile -Command "
-  \$ErrorActionPreference = 'Stop'
-  Set-Location '$WIN_REPO'
-  git fetch origin 2>&1 | Out-Null
-  git checkout $BRANCH 2>&1 | Out-Null
-  git pull --ff-only origin $BRANCH 2>&1 | Out-Null
-  git log --oneline -1
-" 2>&1 | tr -d '\r' | tail -3
+"$CMD" /c "cd /d $WIN_REPO && git fetch origin && git checkout $BRANCH && git pull --ff-only origin $BRANCH" \
+  > /dev/null 2>&1 || {
+    echo "Windows-side git failed. Check for uncommitted changes or a diverged branch there:" >&2
+    echo "  cmd.exe /c \"cd /d $WIN_REPO && git status\"" >&2
+    exit 1
+  }
 
-echo "==> Windows clone is now at the commit above"
+# Verify rather than trust: confirm the Windows clone really landed on the
+# same commit as WSL. A silent no-op here means a live test runs stale code.
+LOCAL_SHA="$(git rev-parse HEAD)"
+REMOTE_SHA="$("$CMD" /c "cd /d $WIN_REPO && git rev-parse HEAD" 2>/dev/null | tr -d '\r\n')"
+
+if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
+  echo "==> In sync at $(git log --oneline -1)"
+else
+  echo "==> OUT OF SYNC: WSL at ${LOCAL_SHA:0:7}, Windows at ${REMOTE_SHA:0:7}" >&2
+  exit 1
+fi
