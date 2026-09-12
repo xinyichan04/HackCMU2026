@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>live 3D head — tracking → .glb</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0b0d10; color:#e6e9ef; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; }
+  #stage { position:fixed; inset:0; }
+  video, canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  video { object-fit:cover; transform:scaleX(-1); }         /* mirror: it should feel like a mirror */
+  canvas { pointer-events:none; }
+  #hud { position:fixed; top:12px; left:12px; padding:10px 12px; background:#0b0d10cc; border:1px solid #2a3340;
+         border-radius:8px; backdrop-filter:blur(6px); max-width:340px; }
+  #hud b { color:#8ab4ff; font-weight:600; }
+  #status { color:#ffd479; }
+  .row { display:flex; justify-content:space-between; gap:14px; }
+  .row span:last-child { color:#9fb0c5; }
+  #keys { position:fixed; bottom:12px; left:12px; color:#6d7d91; }
+  #err { position:fixed; inset:auto 12px 12px 12px; padding:10px 12px; background:#3a1214; border:1px solid #7a2a2f;
+         border-radius:8px; color:#ffb3b8; display:none; white-space:pre-wrap; }
+</style>
+
+<div id="stage">
+  <video id="cam" playsinline autoplay muted></video>
+  <canvas id="gl"></canvas>
+</div>
+
+<div id="hud">
+  <div><b>live 3D head</b></div>
+  <div id="status">booting…</div>
+  <div class="row"><span>model</span><span id="m-model">—</span></div>
+  <div class="row"><span>morphs mapped</span><span id="m-mapped">—</span></div>
+  <div class="row"><span>face</span><span id="m-face">—</span></div>
+  <div class="row"><span>fps</span><span id="m-fps">—</span></div>
+  <div class="row"><span>top shape</span><span id="m-top">—</span></div>
+</div>
+<div id="keys">[h] hide head · [v] hide video · [w] wireframe · [d] debug pose</div>
+<div id="err"></div>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader }    from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder} from 'three/addons/libs/meshopt_decoder.module.js';
+import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs';
+
+const qs       = new URLSearchParams(location.search);
+const MODEL    = qs.get('model')  || '../models3d/facecap.glb';
+const MIRROR   = qs.get('mirror') !== '0';
+const SCALE_K  = parseFloat(qs.get('scale') || '1.0');
+
+const $ = id => document.getElementById(id);
+const status = s => { $('status').textContent = s; };
+const fail = e => { const b=$('err'); b.style.display='block'; b.textContent = 'ERROR\n' + (e && e.stack || e); console.error(e); };
+window.addEventListener('error', ev => fail(ev.error || ev.message));
+
+/* ---------- ARKit naming: MediaPipe emits camelCase, models ship either convention ---------- */
+const canon = s => String(s).trim()
+  .replace(/[_.\- ]?([LR])$/, (_, g) => (g === 'L' ? 'left' : 'right'))
+  .toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/* ---------- three.js ---------- */
+const canvas   = $('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, alpha:true, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene  = new THREE.Scene();
+let   camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -5000, 5000);   // pixel space, set in resize()
+scene.add(new THREE.AmbientLight(0xffffff, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.9); key.position.set(0.4, 0.8, 1); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 0.7); rim.position.set(-0.6, 0.2, -0.8); scene.add(rim);
+
+const headGroup = new THREE.Group();      // positioned in pixel space each frame
+const headPivot = new THREE.Group();      // carries rotation about the model's own centre
+headGroup.add(headPivot); scene.add(headGroup);
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.left = -w/2; camera.right = w/2; camera.top = h/2; camera.bottom = -h/2;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+/* ---------- load the model ---------- */
+/* facecap.glb is gltfpack-compressed: it REQUIRES EXT_meshopt_compression and
+   KHR_texture_basisu, so these two decoders must be wired or it will not open. */
+const ktx2 = new KTX2Loader()
+  .setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/')
+  .detectSupport(renderer);
+const loader = new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
+
+let morphMesh = null, morphIndex = new Map(), modelHeightPx = 1, wire = false;
+
+async function loadModel(url) {
+  status('loading model…');
+  const gltf = await loader.loadAsync(url);
+  const root = gltf.scene;
+
+  // Normalise: centre the model on its own bounding box and scale to ~1 unit tall,
+  // so any donor model can be dropped in without hand-tuned numbers.
+  const box  = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const mid  = box.getCenter(new THREE.Vector3());
+  root.position.sub(mid);
+  const unit = 1 / (size.y || 1);
+  root.scale.multiplyScalar(unit);
+  modelHeightPx = 1;
+
+  root.traverse(o => {
+    if (o.isMesh) {
+      o.frustumCulled = false;
+      if (o.morphTargetDictionary && !morphMesh) morphMesh = o;
+    }
+  });
+
+  morphIndex = new Map();
+  if (morphMesh) for (const [name, i] of Object.entries(morphMesh.morphTargetDictionary))
+    morphIndex.set(canon(name), i);
+
+  headPivot.add(root);
+  $('m-model').textContent = url.split('/').pop();
+  return gltf;
+}
+
+/* ---------- MediaPipe, in the browser: one process owns the camera, so the frame
+   we track is the frame we draw on (handoff section 6.3) ---------- */
+let landmarker = null;
+async function initTracking() {
+  status('loading tracker…');
+  const fileset = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm');
+  landmarker = await FaceLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    outputFaceBlendshapes: true,
+    outputFacialTransformationMatrixes: true,
+  });
+}
+
+async function initCamera() {
+  status('requesting camera…');
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
+  const v = $('cam');
+  v.srcObject = stream;
+  await new Promise(r => v.onloadedmetadata = r);
+  await v.play();
+  return v;
+}
+
+/* ---------- per-frame ---------- */
+const mat = new THREE.Matrix4(), quat = new THREE.Quaternion(),
+      pos = new THREE.Vector3(), scl = new THREE.Vector3();
+let lastT = 0, fps = 0, showHead = true, debugPose = false;
+
+function applyBlendshapes(categories) {
+  if (!morphMesh) return 0;
+  let hit = 0, topName = '', topVal = 0;
+  morphMesh.morphTargetInfluences.fill(0);
+  for (const c of categories) {
+    if (c.categoryName === '_neutral') continue;        // not a morph target
+    const idx = morphIndex.get(canon(c.categoryName));
+    if (idx === undefined) continue;
+    morphMesh.morphTargetInfluences[idx] = c.score;
+    hit++;
+    if (c.score > topVal) { topVal = c.score; topName = c.categoryName; }
+  }
+  $('m-top').textContent = topVal > 0.15 ? `${topName} ${topVal.toFixed(2)}` : '—';
+  return hit;
+}
+
+function placeHead(lm, matrixData, vw, vh) {
+  // Position and size come from landmarks (robust, matches the video exactly);
+  // rotation comes from the 4x4 facial transform (MediaPipe's real head pose).
+  const noseTip = lm[1], leftT = lm[234], rightT = lm[454], chin = lm[152], brow = lm[10];
+  const W = innerWidth, H = innerHeight;
+
+  // video is object-fit:cover — replicate that mapping so overlay and video agree
+  const scale = Math.max(W / vw, H / vh);
+  const ox = (W - vw * scale) / 2, oy = (H - vh * scale) / 2;
+  const toScreen = p => {
+    let x = p.x * vw * scale + ox;
+    if (MIRROR) x = W - x;
+    return { x, y: p.y * vh * scale + oy };
+  };
+
+  const n = toScreen(noseTip), a = toScreen(leftT), b = toScreen(rightT),
+        c = toScreen(chin), d = toScreen(brow);
+  const faceH = Math.hypot(c.x - d.x, c.y - d.y);
+
+  headGroup.position.set(n.x - W/2, -(n.y - H/2), 0);
+  const s = (faceH / modelHeightPx) * 1.35 * SCALE_K;      // model height ≈ 1 after normalisation
+  headGroup.scale.setScalar(s);
+
+  if (matrixData) {
+    mat.fromArray(matrixData);                              // column-major, as three expects
+    mat.decompose(pos, quat, scl);
+    const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
+    // mirrored view flips the sense of yaw and roll
+    headPivot.rotation.set(e.x, MIRROR ? -e.y : e.y, MIRROR ? -e.z : e.z);
+  }
+  if (debugPose) $('m-face').textContent =
+    `yaw ${(headPivot.rotation.y*57.3).toFixed(0)}° pitch ${(headPivot.rotation.x*57.3).toFixed(0)}°`;
+}
+
+function loop(video) {
+  const t = performance.now();
+  if (video.readyState >= 2 && landmarker) {
+    const res = landmarker.detectForVideo(video, t);
+    const has = res.faceLandmarks && res.faceLandmarks.length > 0;
+    if (!debugPose) $('m-face').textContent = has ? 'tracking' : 'no face';
+    headPivot.visible = headGroup.visible = has && showHead;
+    if (has) {
+      const shapes = res.faceBlendshapes?.[0]?.categories || [];
+      const mapped = applyBlendshapes(shapes);
+      $('m-mapped').textContent = `${mapped}/51`;
+      placeHead(res.faceLandmarks[0],
+                res.facialTransformationMatrixes?.[0]?.data,
+                video.videoWidth, video.videoHeight);
+    }
+  }
+  const dt = t - lastT; lastT = t;
+  fps = fps ? fps * 0.9 + (1000 / dt) * 0.1 : 1000 / dt;
+  $('m-fps').textContent = fps.toFixed(0);
+  renderer.render(scene, camera);
+  requestAnimationFrame(() => loop(video));
+}
+
+addEventListener('keydown', e => {
+  if (e.key === 'h') showHead = !showHead;
+  if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
+  if (e.key === 'd') debugPose = !debugPose;
+  if (e.key === 'w') { wire = !wire; scene.traverse(o => { if (o.isMesh) o.material.wireframe = wire; }); }
+});
+
+/* ---------- headless self-test: prove the mapping without a camera ---------- */
+window.__pose = () => JSON.stringify({
+  visible: headGroup.visible,
+  pos: headGroup.position.toArray().map(v => +v.toFixed(1)),
+  scale: +headGroup.scale.x.toFixed(2),
+  rotDeg: [headPivot.rotation.x, headPivot.rotation.y, headPivot.rotation.z].map(v => +(v * 57.2958).toFixed(1)),
+  screen: [innerWidth, innerHeight],
+  face: document.getElementById('m-face').textContent,
+  mapped: document.getElementById('m-mapped').textContent,
+  fps: document.getElementById('m-fps').textContent,
+  top: document.getElementById('m-top').textContent,
+});
+
+window.__selftest = () => {
+  const names = ['jawOpen','mouthSmileLeft','mouthSmileRight','eyeBlinkLeft','eyeBlinkRight',
+                 'browInnerUp','cheekPuff','noseSneerLeft','mouthPucker','eyeWideRight'];
+  const mapped = applyBlendshapes(names.map(n => ({ categoryName:n, score:0.9 })));
+  const nonZero = morphMesh ? morphMesh.morphTargetInfluences.filter(v => v > 0).length : 0;
+  return JSON.stringify({
+    modelLoaded: !!morphMesh,
+    morphTargetsOnModel: morphMesh ? morphMesh.morphTargetInfluences.length : 0,
+    indexedNames: morphIndex.size,
+    probeMapped: mapped, probeNonZero: nonZero,
+    trackerReady: !!landmarker,
+  });
+};
+
+(async () => {
+  try {
+    await loadModel(MODEL);
+    status('model ok — starting tracker');
+    window.__modelReady = true;
+    await initTracking();
+    window.__trackerReady = true;
+    const video = await initCamera();
+    status('live');
+    loop(video);
+  } catch (e) { status('failed'); fail(e); }
+})();
+</script>

@@ -85,3 +85,26 @@ Key morphs **by name, never by index**, and normalise before comparing: ARKit sh
 Apple's `mouthSmileLeft` and as the `_L`/`_R` suffix that Blender, Unreal and Live Link emit. A
 strict equality check scores `facecap.glb` 15/51 and rejects a perfectly good model. See
 `poc/models3d/README.md`.
+
+## Seeing it work — `poc/web/live3d.html`
+
+```bash
+./poc/web/serve.sh              # then open http://localhost:8901/poc/web/live3d.html
+```
+
+Camera → MediaPipe → `.glb`, all in the browser, one process owning the camera so the frame you
+track is the frame you draw on (`AVATAR3D-HANDOFF.md` §6.3). No UDP, no WebSocket bridge, no
+camera sharing, no sync drift.
+
+Blendshapes are keyed **by name through the same `_L`/`_R` normalisation** the validator uses, so
+`facecap.glb` drives correctly despite spelling its targets `mouthSmile_L`. Head rotation comes from
+MediaPipe's `facialTransformationMatrixes`; screen position and size come from landmarks, which
+keeps the overlay locked to the video.
+
+`facecap.glb` needs `MeshoptDecoder` and `KTX2Loader` wired — the page does that, and it is the
+concrete cost of the `extensionsRequired` warning `glb_inspect.py` prints.
+
+Measured headless (Chrome with a still face piped in as a fake camera): model loaded, tracker
+running, `face=tracking`, **`mapped=51/51`**, head pose pitch 12.3° / yaw −5° / roll 14.4°, 60 fps.
+
+Keys: `h` hide head · `v` hide video · `w` wireframe · `d` pose readout.
