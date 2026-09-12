@@ -503,6 +503,7 @@ function sserafimify() {
     b.textContent = 'LE SSERAFIMIFY!!'; b.classList.remove('small');
     $('tagline').textContent = 'step in front of the camera';
     $('hint').style.display = 'none';
+    music.stop();
   }
 }
 $('bigbtn').addEventListener('click', sserafimify);
@@ -550,7 +551,17 @@ const music = {
     else { audio.pause(); $('mu-play').textContent='▶'; $('mu-lamp').classList.remove('on'); }
   },
   next() { if (this.tracks.length) this.play(this.i + 1); },
-  autostart() { if (this.tracks.length && !this.started) this.play(0); },
+  stop() {
+    const audio = $('bgm');
+    if (!audio.paused) audio.pause();
+    $('mu-play').textContent = '▶'; $('mu-lamp').classList.remove('on');
+  },
+  // The button owns the soundtrack: SSERAFIMIFY starts/resumes, DE- pauses.
+  autostart() {
+    if (!this.tracks.length) return;
+    if (this.i === -1) this.play(0);
+    else if ($('bgm').paused) this.toggle();
+  },
 };
 music.init();
 
