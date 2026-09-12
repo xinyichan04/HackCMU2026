@@ -1,3 +1,4 @@
+# Final Product: https://hackcmu.felixlin.dev
 # Be LE SSERAFIM — HackCMU 2026 (Multiplayer track)
 
 Point a camera at you and your friends and everyone becomes a LE SSERAFIM member, live. Each person picks a
