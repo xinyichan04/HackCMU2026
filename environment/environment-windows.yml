@@ -1,0 +1,24 @@
+# Native Windows environment (NOT WSL): the live mic-in/speaker-out demo only.
+# Run with a Windows-native Miniconda install (WSL's conda is a separate
+# install and cannot be used here) so `sounddevice` gets real WASAPI device
+# access instead of going through WSLg's flaky audio passthrough.
+#
+# Create with (from a Windows terminal / Anaconda Prompt):
+#   conda env create -f environment\environment-windows.yml
+# Then install a CUDA-enabled torch build for your driver, e.g.:
+#   pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128
+# Then run environment\setup_rvc.sh (via Git Bash / WSL-free bash) or its
+# manual equivalent to vendor RVC and pull weights, same as the WSL side.
+# Python is pinned to 3.12 to match RVC's requirments_*_py312.txt files.
+name: rvc-live
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - sounddevice
+      - soundfile
+      - numpy
+      - pyyaml

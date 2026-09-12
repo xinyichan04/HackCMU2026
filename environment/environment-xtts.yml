@@ -1,0 +1,17 @@
+# Separate environment for XTTS-v2 zero-shot voice cloning (text -> speech
+# in a cloned voice, given a short reference clip). Kept isolated from
+# rvc-train on purpose: coqui-tts pulls in numpy>=2 and transformers>=5,
+# which directly conflict with RVC's pinned numpy<2 / transformers<4.50 --
+# installing both into one environment silently upgrades RVC's dependencies
+# out from under it.
+#
+# Create with: conda env create -f environment/environment-xtts.yml
+# Then: conda activate xtts && pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128
+#       pip install coqui-tts
+name: xtts
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip

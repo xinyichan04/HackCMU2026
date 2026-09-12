@@ -1,0 +1,28 @@
+# Vendored third-party code, not ours to version
+external/
+
+# Audio data and trained model artifacts (large, personal voice data)
+data/raw/
+data/processed/
+models/
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.mov
+*.pth
+*.index
+
+# ...except smoke-test sample audio, which is small and meant to be committed
+!inference/test_audio/*.wav
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Conda
+*.conda-lock
+
+# OS
+.DS_Store
