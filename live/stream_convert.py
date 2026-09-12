@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -39,13 +40,28 @@ def default_model_name() -> str:
     return "my_voice.pth"
 
 
-def run_live(converter: VoiceConverter, input_device, output_device) -> None:
+def run_live(converter: VoiceConverter, input_device, output_device,
+             prebuffer: int = 2) -> None:
     # Producer/consumer split so GPU inference never runs inside the
     # PortAudio callback thread -- a slow block would otherwise risk
     # under/overruns rather than just a dropped/delayed block.
-    in_q: "queue.Queue[object]" = queue.Queue(maxsize=4)
-    out_q: "queue.Queue[object]" = queue.Queue(maxsize=4)
+    #
+    # Queue depth has to exceed the pre-roll or priming can never complete.
+    depth = max(4, prebuffer + 2)
+    in_q: "queue.Queue[object]" = queue.Queue(maxsize=depth)
+    out_q: "queue.Queue[object]" = queue.Queue(maxsize=depth)
     stop_event = threading.Event()
+
+    # Conversion runs several times faster than realtime, but it is fed at
+    # exactly realtime (one block per callback), so the worker can never run
+    # ahead and out_q sits near empty. With no slack, one slow block -- a GPU
+    # clock ramp, a scheduling hiccup -- lands on an empty queue and the
+    # output drops to silence. Holding playback back by `prebuffer` blocks
+    # buys that much jitter tolerance, at the cost of the same amount of
+    # added latency. During priming the callback still feeds in_q, so the
+    # backlog accumulates while the listener hears silence anyway.
+    state = {"primed": prebuffer <= 0, "last": None}
+    fade = np.linspace(1.0, 0.0, converter.block_frame, dtype=np.float32)
 
     def worker():
         while not stop_event.is_set():
@@ -65,10 +81,27 @@ def run_live(converter: VoiceConverter, input_device, output_device) -> None:
             in_q.put_nowait(indata[:, 0].copy())
         except queue.Full:
             pass  # drop input rather than build unbounded latency
+
+        if not state["primed"]:
+            if out_q.qsize() >= prebuffer:
+                state["primed"] = True
+            else:
+                outdata.fill(0.0)
+                return
         try:
-            outdata[:, 0] = out_q.get_nowait()
+            block = out_q.get_nowait()
+            state["last"] = block
+            outdata[:, 0] = block
         except queue.Empty:
-            outdata.fill(0.0)  # brief underrun -> silence, not a glitch/crash
+            # Fade the previous block out rather than writing digital silence.
+            # A hard cut to zero is a discontinuity -- an audible click on top
+            # of the gap it is already causing -- whereas a fade degrades to
+            # silence smoothly and is far less noticeable at one block long.
+            if state["last"] is None:
+                outdata.fill(0.0)
+            else:
+                outdata[:, 0] = state["last"] * fade
+                state["last"] = None
 
     worker_thread = threading.Thread(target=worker, daemon=True)
     worker_thread.start()
@@ -134,6 +167,11 @@ def main() -> int:
     parser.add_argument("--block-time", type=float, default=0.25, help="Chunk size in seconds (RVC's own default).")
     parser.add_argument("--crossfade-time", type=float, default=0.05, help="SOLA crossfade length in seconds.")
     parser.add_argument("--extra-time", type=float, default=2.5, help="Look-back context window in seconds.")
+    parser.add_argument("--prebuffer", type=int, default=2,
+                        help="Blocks of converted audio to queue before playback starts. "
+                             "Conversion is fed at realtime so it can never run ahead on its "
+                             "own; this buys jitter tolerance, adding prebuffer * block-time "
+                             "of latency. Raise it if audio is choppy, 0 to disable.")
     parser.add_argument("--list-devices", action="store_true")
     parser.add_argument("--input-device", default=None, help="Index or name substring.")
     parser.add_argument("--output-device", default=None, help="Index or name substring.")
@@ -180,7 +218,7 @@ def main() -> int:
 
     input_device = audio_io.resolve_device(args.input_device, "input")
     output_device = audio_io.resolve_device(args.output_device, "output")
-    run_live(converter, input_device, output_device)
+    run_live(converter, input_device, output_device, prebuffer=args.prebuffer)
     return 0
 
 
