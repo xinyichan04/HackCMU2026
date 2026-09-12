@@ -16,3 +16,5 @@ sources/*
 !sources/.gitkeep
 !sources/README.md
 results/
+# generated face textures are real people's likenesses: keep them local
+poc/textures/
