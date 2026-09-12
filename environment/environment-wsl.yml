@@ -1,0 +1,24 @@
+# WSL2 environment: data prep, training, and offline (file-to-file) inference.
+# GPU-accelerated (CUDA via WSL2 passthrough). Not used for live mic/speaker I/O.
+#
+# Python is pinned to 3.12 because RVC-Project's current requirements files
+# (requirments_cu128_py312.txt etc.) are built specifically against 3.12 —
+# the system's Python 3.13 is too new, and older 3.10/3.9 guidance from
+# older RVC forks no longer applies to this vendored version.
+#
+# Create with: conda env create -f environment/environment-wsl.yml
+# Then run environment/setup_rvc.sh to vendor RVC and install its own
+# requirements + pretrained weights (RVC's requirements file doesn't exist
+# until it's cloned, so it can't be listed here directly).
+name: rvc-train
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - ffmpeg
+  - pip
+  - pip:
+      - pyyaml
+      - soundfile
+      - librosa

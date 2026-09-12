@@ -1,0 +1,17 @@
+# Training configuration for training/train.py.
+# sample_rate must match the pretrained generator/discriminator pair
+# downloaded by environment/setup_rvc.sh (f0G40k.pth / f0D40k.pth -> "40k").
+experiment_name: chaewon_custom
+sample_rate: 40k        # 32k | 40k | 48k -- must match the pretrained_v2/f0*{sr}.pth pair you have
+version: v2
+f0: true                # use pitch (f0) conditioning -- keep true for singing/speech quality
+f0_method: rmvpe        # rmvpe is RVC's modern default; more accurate than the legacy "pm" method
+total_epoch: 250
+save_every_epoch: 50
+batch_size: 8
+save_every_weights: true   # extract a usable .pth into assets/weights/ at every checkpoint save
+if_latest: true            # only keep the latest G/D checkpoint on disk (saves space)
+cache_data_in_gpu: true    # fine for a small hackathon-scale dataset on an 8GB GPU
+gpu: "0"
+speaker_id: 0
+n_cpu: 8

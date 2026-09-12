@@ -26,3 +26,20 @@ poc/archive/textures/
 # third-party test avatars: re-fetch with poc/models3d/fetch.sh
 poc/models3d/*.glb
 poc/models3d/*.vrm
+
+# --- live_voice (RVC voice conversion) ---
+# Vendored third-party code, not ours to version
+external/
+# Audio data and trained model artifacts (large, personal voice data)
+data/raw/
+data/processed/
+models/
+*.wav
+*.mp3
+*.m4a
+*.pth
+*.index
+# ...except smoke-test sample audio, which is small and meant to be committed
+!inference/test_audio/*.wav
+# Conda
+*.conda-lock
