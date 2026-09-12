@@ -1,0 +1,6 @@
+# Python 3.12 (mediapipe 0.10.x has no 3.13 wheels; mediapipe 1.0.x crashes in the Metal helper on macOS)
+mediapipe==0.10.21
+numpy<2
+opencv-contrib-python==4.11.0.86
+pyvirtualcam>=0.15
+pytest

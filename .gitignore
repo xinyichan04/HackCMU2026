@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+poc/models/
+*.mp4
+*.mov
+.context/
+.DS_Store
