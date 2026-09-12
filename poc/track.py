@@ -6,8 +6,11 @@
     python poc/track.py --udp-out 127.0.0.1:9001    # stream tracking JSON to another process
     python poc/track.py --jsonl-out track.jsonl     # record tracking data to a file
     python poc/track.py --source udp:9000       # take ARKit data from an iPhone instead of a camera
+    python poc/track.py --body --hands          # add 33-point body + 21-point hand tracking
+    python poc/track.py --body --segmentation   # also compute the person cutout mask
 
-Hotkeys: m mesh, l landmarks, b blendshape bars, p pose axes, i ids, q quit, s save a PNG.
+Hotkeys: m mesh, l landmarks, b blendshape bars, p pose axes, i ids, k skeleton, g mask,
+         n joint names, q quit, s save a PNG.
 
 Two sources, one output format:
   camera  MediaPipe Face Landmarker - multi-face, 478 landmarks, 52 blendshapes inferred from RGB.
@@ -184,6 +187,11 @@ def main(argv=None):
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--max-faces", type=int, default=4, help="how many faces to track at once")
+    ap.add_argument("--body", action="store_true", help="also track 33-point body pose (multi-person)")
+    ap.add_argument("--hands", action="store_true", help="also track 21 landmarks per hand")
+    ap.add_argument("--segmentation", action="store_true", help="with --body: person cutout mask")
+    ap.add_argument("--max-bodies", type=int, default=2)
+    ap.add_argument("--max-hands", type=int, default=4)
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--no-smoothing", action="store_true", help="raw landmarks, no temporal EMA")
     ap.add_argument("--udp-out", default=None, metavar="HOST:PORT", help="stream tracking JSON per frame")
@@ -225,6 +233,18 @@ def main(argv=None):
         tracker = FaceTracker(str(ensure_model(Path(args.model))), max_faces=args.max_faces,
                               smoothing=0.0 if args.no_smoothing else 0.35)
 
+    body_tracker = hand_tracker = None
+    if args.body or args.hands:
+        from bodytrack import (BodyTracker, HandTracker, body_record, draw_body,  # noqa: E402
+                               draw_hand, hand_record)
+        if args.source.startswith("udp:"):
+            print("note: --body/--hands need camera frames; ignored with a udp source")
+        else:
+            if args.body:
+                body_tracker = BodyTracker(max_bodies=args.max_bodies, segmentation=args.segmentation)
+            if args.hands:
+                hand_tracker = HandTracker(max_hands=args.max_hands)
+
     sink = None
     if args.udp_out:
         host, port = args.udp_out.rsplit(":", 1)
@@ -232,12 +252,15 @@ def main(argv=None):
         print(f"streaming tracking JSON to udp://{host}:{port}")
     jsonl = open(args.jsonl_out, "a") if args.jsonl_out else None
 
-    show = {"mesh": True, "landmarks": False, "shapes": True, "pose": True, "ids": True}
+    show = {"mesh": True, "landmarks": False, "shapes": True, "pose": True, "ids": True,
+            "skeleton": True, "mask": args.segmentation, "joints": False}
     fps_ema, t_prev, frame_i, out = 0.0, time.monotonic(), 0, None
     print("tracking. keys: m mesh, l landmarks, b bars, p pose, i ids, s save, q quit")
     try:
         while True:
             faces_out: list[dict] = []
+            bodies_out: list[dict] = []
+            hands_out: list[dict] = []
             if udp_in:
                 frame = np.zeros((args.height, args.width, 3), dtype=np.uint8)
                 rec = udp_in.read()
@@ -259,7 +282,19 @@ def main(argv=None):
                     break
                 if not args.no_mirror:
                     frame = cv2.flip(frame, 1)
-                faces = tracker.track(frame, int(time.monotonic() * 1000))
+                ts = int(time.monotonic() * 1000)
+                # Bodies first so the segmentation tint lands under the face overlay.
+                if body_tracker:
+                    for i, b in enumerate(body_tracker.track(frame, ts)):
+                        draw_body(frame, b, PALETTE[i % len(PALETTE)], show["mask"] if show["skeleton"] else False,
+                                  labels=show["joints"])
+                        bodies_out.append(body_record(b, i))
+                if hand_tracker:
+                    for i, hd in enumerate(hand_tracker.track(frame, ts)):
+                        if show["skeleton"]:
+                            draw_hand(frame, hd, PALETTE[(i + 2) % len(PALETTE)])
+                        hands_out.append(hand_record(hd, i))
+                faces = tracker.track(frame, ts)
                 for i, f in enumerate(faces):
                     draw_face(frame, f, i, show)
                     faces_out.append(record(f, i))
@@ -272,14 +307,29 @@ def main(argv=None):
             if dt > 0:
                 fps_ema = 0.9 * fps_ema + 0.1 * (1.0 / dt) if fps_ema else 1.0 / dt
             src = f"udp:{udp_in.port}" if udp_in else f"cam {args.camera}"
-            draw_hud(frame, f"{src}  |  faces {len(faces_out)}/{args.max_faces}  |  {fps_ema:4.1f} fps"
-                            f"  |  {'52 blendshapes' if faces_out and faces_out[0]['blendshapes'] else 'no blendshapes'}")
+            hud = f"{src}  |  faces {len(faces_out)}/{args.max_faces}"
+            if body_tracker:
+                hud += f"  |  bodies {len(bodies_out)}"
+            if hand_tracker:
+                hud += f"  |  hands {len(hands_out)}"
+            hud += f"  |  {fps_ema:4.1f} fps"
+            if faces_out and faces_out[0]["blendshapes"]:
+                hud += "  |  52 blendshapes"
+            draw_hud(frame, hud)
 
-            if faces_out and (sink or jsonl):
+            if (faces_out or bodies_out or hands_out) and (sink or jsonl):
                 payload = faces_out
+                bodies_payload = bodies_out
                 if args.no_landmarks_out:
                     payload = [{k: v for k, v in f.items() if k != "landmarks"} for f in faces_out]
-                line = json.dumps({"t": round(now, 3), "frame": frame_i, "faces": payload})
+                    bodies_payload = [{k: v for k, v in b.items() if k not in ("landmarks", "world")}
+                                      for b in bodies_out]
+                rec_out = {"t": round(now, 3), "frame": frame_i, "faces": payload}
+                if body_tracker:
+                    rec_out["bodies"] = bodies_payload
+                if hand_tracker:
+                    rec_out["hands"] = hands_out
+                line = json.dumps(rec_out)
                 if sink:
                     sock, addr = sink
                     try:
@@ -305,6 +355,12 @@ def main(argv=None):
                     show["pose"] = not show["pose"]
                 if k == ord("i"):
                     show["ids"] = not show["ids"]
+                if k == ord("k"):
+                    show["skeleton"] = not show["skeleton"]
+                if k == ord("g"):
+                    show["mask"] = not show["mask"]
+                if k == ord("n"):
+                    show["joints"] = not show["joints"]
                 if k == ord("s"):
                     name = f"track-{int(time.time())}.png"
                     cv2.imwrite(name, frame)
@@ -322,6 +378,10 @@ def main(argv=None):
             cap.release()
         if tracker:
             tracker.close()
+        if body_tracker:
+            body_tracker.close()
+        if hand_tracker:
+            hand_tracker.close()
         if udp_in:
             udp_in.close()
         if jsonl:
