@@ -32,6 +32,12 @@ HERE = Path(__file__).resolve().parent
 CANONICAL_OBJ = HERE / "assets" / "canonical_face_model.obj"
 N_CANONICAL = 468          # the tracker emits 478; the last 10 are irises, not in the mesh
 
+# MediaPipe's multiclass selfie segmenter: 0 background, 1 hair, 2 body-skin, 3 face-skin,
+# 4 clothes, 5 other. Class ids verified against this repo's reference photo, not assumed.
+SEG_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/image_segmenter/"
+                 "selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite")
+HAIR_CLASS = 1
+
 # Face-oval ring: used to trim the texture to the face and to feather the edge.
 OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400,
         377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
@@ -131,12 +137,114 @@ def _warp_triangles(src: np.ndarray, dst: np.ndarray, src_pts: np.ndarray, dst_p
 
 
 def photo_to_texture(photo: np.ndarray, landmarks: np.ndarray, tris: np.ndarray, uv: np.ndarray,
-                     size: int = 1024) -> np.ndarray:
-    """Inverse-warp a tracked photo into the canonical UV layout -> a usable face texture."""
+                     size: int = 1024, exclude: np.ndarray | None = None) -> np.ndarray:
+    """Inverse-warp a tracked photo into the canonical UV layout -> a usable face texture.
+
+    `exclude` is an optional uint8 mask over the photo (non-zero = do not trust this pixel, e.g.
+    hair). Excluded pixels leave holes in the texture, which `fill_holes` then reconstructs.
+    """
     tex = np.zeros((size, size, 3), dtype=np.uint8)
+    coverage = np.zeros((size, size), dtype=np.uint8)
     dst_pts = uv_to_pixels(uv, (size, size))
-    _warp_triangles(photo, tex, landmarks[:N_CANONICAL], dst_pts, tris)
-    return tex
+    _warp_triangles(photo, tex, landmarks[:N_CANONICAL], dst_pts, tris, coverage)
+    if exclude is None:
+        return tex
+
+    # Warp the trust mask through the identical triangles, so "is this texel real?" is answered in
+    # UV space rather than by guessing from colour.
+    trust_src = np.repeat(((exclude == 0).astype(np.uint8) * 255)[:, :, None], 3, axis=2)
+    trust = np.zeros((size, size, 3), dtype=np.uint8)
+    _warp_triangles(trust_src, trust, landmarks[:N_CANONICAL], dst_pts, tris)
+    holes = ((trust[:, :, 0] < 128) & (coverage > 0)).astype(np.uint8) * 255
+    return fill_holes(tex, holes, coverage)
+
+
+def fill_holes(tex: np.ndarray, holes: np.ndarray, coverage: np.ndarray) -> np.ndarray:
+    """Reconstruct texels the photo never showed (they were hair), in two passes.
+
+    1. **Mirror.** The canonical UV layout is *exactly* symmetric about u=0.5 - verified: landmark
+       pairs like (33,263) and (234,454) agree to 3 decimals - so a horizontal flip of the texture
+       maps every texel onto its anatomical opposite. Her covered left cheek really is her visible
+       right cheek, so this is a principled fill, not a smear.
+    2. **Inpaint** whatever is still missing, i.e. occluded on both sides (a symmetric fringe).
+       That part is plausible skin, but it is invented - it was never photographed.
+    """
+    out = tex.copy()
+    flipped = cv2.flip(tex, 1)
+    flipped_ok = cv2.flip(((holes == 0) & (coverage > 0)).astype(np.uint8) * 255, 1)
+    usable = (holes > 0) & (flipped_ok > 0)
+
+    if usable.any():
+        # A photo is rarely lit symmetrically, so the mirrored side arrives at the wrong
+        # brightness and reads as a pale patch. Match it on the band where both halves are
+        # valid, then cross-fade instead of hard-copying so the seam is not a jagged edge.
+        both = (holes == 0) & (flipped_ok > 0) & (coverage > 0)
+        if both.sum() > 256:
+            # A single global shift cannot fix this: studio lighting falls off across the face, so
+            # the mismatch is a spatial gradient. Compare low-frequency fields instead and add the
+            # difference back - the shading matches while the pores and detail survive.
+            # Both fields are blurred with normalized convolution (blur(x*m)/blur(m)) so that
+            # black uncovered texels do not bleed into the average.
+            valid_t = ((holes == 0) & (coverage > 0)).astype(np.float32)
+            valid_f = (flipped_ok > 0).astype(np.float32)
+            lp_t, sup_t = _masked_blur(tex.astype(np.float32), valid_t)
+            lp_f, sup_f = _masked_blur(flipped.astype(np.float32), valid_f)
+            # Fade the correction out where either side had too little valid signal to average,
+            # otherwise those pixels get a meaningless shift and clip to black.
+            conf = np.clip(np.minimum(sup_t, sup_f) / 0.05, 0.0, 1.0)[:, :, None]
+            corrected = flipped.astype(np.float32) + (lp_t - lp_f) * conf
+            flipped = np.clip(corrected, 0, 255).astype(np.uint8)
+        a = cv2.GaussianBlur(usable.astype(np.uint8) * 255, (13, 13), 0).astype(np.float32)
+        a = (a / 255.0)[:, :, None]
+        out = (out.astype(np.float32) * (1 - a) + flipped.astype(np.float32) * a).astype(np.uint8)
+
+    remaining = ((holes > 0) & ~usable).astype(np.uint8) * 255
+    if remaining.any():
+        # dilate slightly so inpainting pulls from clean skin rather than the hole's own fringe
+        remaining = cv2.dilate(remaining, np.ones((3, 3), np.uint8))
+        out = cv2.inpaint(out, remaining, 4, cv2.INPAINT_TELEA)
+    return out
+
+
+def _masked_blur(img: np.ndarray, mask: np.ndarray, k: int = 81):
+    """Low-pass an image counting only masked-in pixels (normalized convolution).
+
+    Returns (lowpass, support). `support` is how much valid signal fed each output pixel: where it
+    is near zero the lowpass is a tiny number divided by a tiny number and therefore meaningless,
+    so callers must gate on it rather than trusting the value.
+    """
+    m = mask[:, :, None] if img.ndim == 3 else mask
+    num = cv2.GaussianBlur(img * m, (k, k), 0)
+    den = cv2.GaussianBlur(mask, (k, k), 0)
+    d = den[:, :, None] if img.ndim == 3 else den
+    return num / np.maximum(d, 1e-3), den
+
+
+def hair_mask(photo: np.ndarray, model_path: Path) -> np.ndarray:
+    """uint8 mask, 255 where the segmenter says 'hair'. Grown slightly to catch soft strand edges."""
+    import mediapipe as mp
+    from mediapipe.tasks import python as mpp
+    from mediapipe.tasks.python import vision
+
+    if not model_path.exists():
+        import urllib.request
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"downloading selfie segmenter to {model_path} ...", flush=True)
+        urllib.request.urlretrieve(SEG_MODEL_URL, model_path)
+
+    opts = vision.ImageSegmenterOptions(
+        base_options=mpp.BaseOptions(model_asset_path=str(model_path)),
+        running_mode=vision.RunningMode.IMAGE, output_category_mask=True)
+    with vision.ImageSegmenter.create_from_options(opts) as seg:
+        img = mp.Image(image_format=mp.ImageFormat.SRGB,
+                       data=cv2.cvtColor(photo, cv2.COLOR_BGR2RGB))
+        cats = seg.segment(img).category_mask.numpy_view()
+    m = (cats == HAIR_CLASS).astype(np.uint8) * 255
+    if m.shape != photo.shape[:2]:
+        m = cv2.resize(m, (photo.shape[1], photo.shape[0]), interpolation=cv2.INTER_NEAREST)
+    # strand edges are soft and the mask cuts them tight; a couple of px of growth avoids a
+    # dark halo surviving into the texture
+    return cv2.dilate(m, np.ones((5, 5), np.uint8))
 
 
 class FacePainter:
@@ -241,6 +349,10 @@ def main(argv=None):
     ap.add_argument("--from-photo", metavar="IMG", help="build a canonical-UV texture from a face photo")
     ap.add_argument("--out", default=None, help="where to write the texture PNG")
     ap.add_argument("--size", type=int, default=1024, help="texture resolution (default 1024)")
+    ap.add_argument("--remove-hair", action="store_true",
+                    help="with --from-photo: segment hair out and reconstruct the skin underneath "
+                         "(mirror across the face, then inpaint) -> a hair-free texture")
+    ap.add_argument("--seg-model", default=str(HERE / "models" / "selfie_multiclass_256x256.tflite"))
     ap.add_argument("--apply-to", metavar="IMG", help="test: paint a texture onto this photo")
     ap.add_argument("--texture", default=None, help="texture to use with --apply-to")
     ap.add_argument("--trim-forehead", type=float, default=0.0, metavar="0..0.9",
@@ -272,7 +384,11 @@ def main(argv=None):
         if lm is None:
             print(f"no face found in {args.from_photo}. Needs a roughly frontal, unobstructed face.")
             return 1
-        tex = photo_to_texture(photo, lm, tris, uv, size=args.size)
+        exclude = None
+        if args.remove_hair:
+            exclude = hair_mask(photo, Path(args.seg_model))
+            print(f"hair segmented: {100 * (exclude > 0).mean():.0f}% of the photo excluded")
+        tex = photo_to_texture(photo, lm, tris, uv, size=args.size, exclude=exclude)
         out = args.out or str(Path(args.from_photo).with_suffix("")) + "-texture.png"
         cv2.imwrite(out, tex)
         filled = (cv2.cvtColor(tex, cv2.COLOR_BGR2GRAY) > 0).mean()

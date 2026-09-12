@@ -75,6 +75,9 @@ warped, so it is photoreal, it follows *your* expression, and it costs ~14 ms a 
 # reference photo had a fringe and hair is ghosting onto your forehead? crop the top
 ./.venv/bin/python poc/track.py --texture ...png --trim-forehead 0.18
 
+# or reconstruct the skin the hair was covering, instead of cropping it away
+./.venv/bin/python poc/facepaint.py --from-photo ref.jpg --remove-hair --out tex.png
+
 # paint by hand instead: a wireframe of the UV layout to work inside
 ./.venv/bin/python poc/facepaint.py --uv-template /tmp/uv.png
 ```
@@ -85,6 +88,27 @@ on a dim webcam face like a sticker).
 
 The canonical model (`poc/assets/canonical_face_model.obj`, 468 verts / 898 tris / UVs) is **not in
 the mediapipe pip wheel** — it is vendored here from the MediaPipe repo.
+
+### `--remove-hair`
+
+Hair falling across the reference face gets baked into the texture and then rides on the wearer.
+`--remove-hair` segments it out and reconstructs the skin underneath, in two passes:
+
+1. **Mirror.** MediaPipe's multiclass selfie segmenter labels each pixel (hair / face-skin / …;
+   class ids verified against a real photo, not assumed). Hair pixels are dropped, leaving holes.
+   The canonical UV layout is **exactly** symmetric about `u=0.5` — verified, landmark pairs like
+   (33, 263) and (234, 454) agree to 3 decimals — so a horizontal flip maps every texel onto its
+   anatomical opposite, and a covered left cheek is filled from the visible right one.
+   The mirrored half is shading-matched first (low-frequency fields via normalized convolution,
+   faded out where there is too little valid signal to average) or the seam shows as a pale patch.
+2. **Inpaint** whatever was occluded on *both* sides. That skin was never photographed — it is
+   plausible, but invented.
+
+What it does and does not fix, measured on the repo's reference photo: hair at the **temples and
+cheeks is removed cleanly** and the live result is visibly better. A **symmetric fringe over the
+forehead is not** — mirroring has nothing clean to copy from, and the segmenter under-calls
+semi-transparent strands. Combine with `--trim-forehead` for now. The real fix is a better source
+photo: higher resolution, and ideally hair tied back.
 
 Limits, honestly: this paints the *face*, so hair, ears and the silhouette are still yours — those
 live outside the mesh and need the `.glb` + real-renderer path. It also needs a roughly frontal face,
