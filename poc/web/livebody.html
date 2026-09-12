@@ -154,11 +154,14 @@ async function loadModel(url) {
    stays one keypress away instead of one deploy away.
    The head is NOT part of this: its mirror negation lives in applyFace, was proven on the
    live3d page independently of Kalidokit, and [m] does not touch it. */
+/* VERDICT (Felix, live camera, 2026-09-12): negate-only is the mirror — anatomical L/R
+   bone assignment with yaw/roll negated. Pinned as default; the cycle stays as an escape
+   hatch for future models but every page load starts on the verified composition. */
 const MODES = [
-  { swap:true,  neg:false, label:'mirror (swap only)' },
+  { swap:false, neg:true,  label:'mirror (verified)' },
+  { swap:true,  neg:false, label:'swap only' },
   { swap:false, neg:false, label:'direct' },
   { swap:true,  neg:true,  label:'swap+negate' },
-  { swap:false, neg:true,  label:'negate only' },
 ];
 let modeIdx = 0;
 const MODE = () => MODES[modeIdx];
