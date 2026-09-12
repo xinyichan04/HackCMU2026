@@ -62,6 +62,7 @@ class VoiceConverter:
         index_rate: float = 0.75,
         nprobe: int = 8,
         sample_rate: int | None = None,
+        output_gain: float = 1.0,
     ):
         """Defaults (block_time/crossfade_time/extra_time) mirror RVC's own
         realtime_gui.py defaults -- they're already tuned for this exact
@@ -86,6 +87,11 @@ class VoiceConverter:
         self.index_rate = index_rate
         self.nprobe = nprobe
         self._forced_sample_rate = sample_rate
+        # Applied to the converted block on the way out. RVC reproduces the
+        # target's own loudness, which is set by the training data rather than
+        # by how loud the speaker is now, so a quiet mic yields quiet output
+        # with no stage in the pipeline that would correct it.
+        self.output_gain = output_gain
         self._loaded = False
 
     def load(self, model_path: str, index_path: str = "") -> None:
@@ -225,7 +231,13 @@ class VoiceConverter:
         infer_wav[: self.sola_buffer_frame] += self.sola_buffer * self.fade_out_window
         self.sola_buffer[:] = infer_wav[self.block_frame: self.block_frame + self.sola_buffer_frame]
 
-        return infer_wav[: self.block_frame].detach().cpu().numpy()
+        out = infer_wav[: self.block_frame].detach().cpu().numpy()
+        if self.output_gain != 1.0:
+            # Hard-clip rather than let the gain wrap or blow past full scale.
+            # Clipping is audible but recoverable by lowering the gain; a
+            # wrapped sample is a loud click straight into the listener's ears.
+            out = np.clip(out * self.output_gain, -1.0, 1.0)
+        return out
 
     def convert_file(self, in_path, out_path) -> None:
         """File-to-file conversion via the exact same per-block code path as

@@ -114,6 +114,15 @@ def main() -> int:
                          help=f"Model filename in assets/weights, or a path. Defaults to {default_model_name()!r}.")
     parser.add_argument("--index", default="", help="Explicit .index path; auto-resolved from the model name if omitted.")
     parser.add_argument("--pitch", type=int, default=0)
+    parser.add_argument("--formant", type=float, default=0.0,
+                        help="Formant shift. A large --pitch drags the formants up with it, "
+                             "which is what makes a heavily shifted voice sound thin or "
+                             "chipmunky; a small negative value here compensates. Try -0.2 to "
+                             "-0.5 when shifting up by 10+ semitones.")
+    parser.add_argument("--output-gain", type=float, default=1.0,
+                        help="Linear gain on converted audio (2.0 = +6 dB). RVC reproduces the "
+                             "target's loudness rather than yours, so a quiet mic gives quiet "
+                             "output; nothing else in the pipeline corrects for it.")
     parser.add_argument("--f0-method", choices=["pm", "rmvpe"], default="rmvpe")
     parser.add_argument("--index-rate", type=float, default=0.75)
     parser.add_argument("--nprobe", type=int, default=8, help="IVF clusters searched per retrieval query (higher = more reliable, still cheap).")
@@ -157,6 +166,8 @@ def main() -> int:
         index_rate=args.index_rate,
         nprobe=args.nprobe,
         sample_rate=args.sample_rate,
+        formant=args.formant,
+        output_gain=args.output_gain,
     )
     converter.load(args.model or default_model_name(), args.index)
 
