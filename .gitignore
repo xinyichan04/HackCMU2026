@@ -42,6 +42,10 @@ models/
 *.m4a
 *.pth
 *.index
+
+# the soundtrack index is generated from whatever audio is present locally or at
+# deploy time — it lists copyrighted filenames and is environment-specific
+poc/web/music/index.json
 # ...except smoke-test sample audio, which is small and meant to be committed
 !inference/test_audio/*.wav
 # Conda

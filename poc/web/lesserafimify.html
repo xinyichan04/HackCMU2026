@@ -718,15 +718,32 @@ $('bigbtn').addEventListener('click', () => {
   $('bigbtn').blur();
 });
 
-/* ---------- music: plays whatever mp3s are dropped into poc/web/music/ ----------
-   python http.server directory listings are parseable HTML — good enough for a
-   local demo, and keeps copyrighted audio out of the repo (music/ is gitignored). */
+/* ---------- music: plays whatever audio is in poc/web/music/ ----------
+   Two discovery paths, in this order:
+   1. music/index.json — a plain array of filenames. Static hosts (Cloudflare
+      Pages, S3, GitHub Pages) serve no directory index, so listing-parsing
+      finds nothing there and the page would go silent with the files sitting
+      right beside it. A generated index is the only thing that works anywhere.
+   2. a parsed directory listing — what `python3 -m http.server` gives us, so
+      local dev keeps working by just dropping files in, with no build step.
+   Audio stays out of the repo either way (music/ is gitignored). */
 const music = {
   tracks: [], i: -1, started: false,
   async init() {
     const audio = $('bgm');
     audio.volume = 0.55;
+    const AUDIO_RE = /\.(mp3|m4a|ogg|wav)$/i;
     try {
+      const r = await fetch('music/index.json');
+      // A static host answers a missing file with its 404 page, not an error,
+      // so the parse has to be what decides — never the status alone.
+      if (!r.ok) throw 0;
+      const list = await r.json();
+      if (!Array.isArray(list)) throw 0;
+      this.tracks = list.filter(n => typeof n === 'string' && AUDIO_RE.test(n))
+                        .map(n => 'music/' + n.replace(/^\.?\/*/, ''));
+    } catch { this.tracks = []; }
+    if (!this.tracks.length) try {
       const r = await fetch('music/');
       if (!r.ok) throw 0;
       const html = await r.text();
