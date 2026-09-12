@@ -99,7 +99,8 @@ if (GL.gl1) {
 if (!renderer) {
   note('<b>This page cannot run in this browser: there is no WebGL.</b>\nreason: ' +
        (GL.reason || 'WebGLRenderer could not be created') +
-       '\n\nSee live3d.html for the full recovery steps — same requirements, same fixes.');
+       '\n\nRecovery: Chrome → Settings → System → turn ON "Use graphics acceleration when available",\n' +
+       'relaunch; check chrome://gpu says WebGL is accelerated. Fastest workaround: open this page in Safari.');
   status('stopped — no WebGL');
   throw new Error('no WebGL');
 }

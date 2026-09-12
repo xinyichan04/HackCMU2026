@@ -1,33 +1,35 @@
-# POC — browser 3D head (the picked approach)
+# POC — livebody: full-body tracking → VRM avatar (the product)
 
-Live webcam → MediaPipe Face Landmarker (in-browser) → ARKit-51 blendshapes +
-head pose → three.js renders a .glb head over the video. No python, no server
-logic — one HTML page and a static file server.
+Live webcam → MediaPipe (in-browser): Pose Landmarker (33 body points) +
+Face Landmarker (head pose + expressions) → Kalidokit → a rigged VRM
+character mirrors you, full body, ~30 fps. No python, no server logic —
+one HTML page and a static file server.
 
 ## Run
 
 ```bash
 poc/web/serve.sh            # serves the repo on http://localhost:8901
-# open http://localhost:8901/poc/web/live3d.html
+# open http://localhost:8901/poc/web/livebody.html
 ```
 
-Options and hotkeys are printed by `serve.sh` and shown on the page
-(`?model=` to swap the .glb, `[` / `]` to resize the head live).
-
-## Layout
-
-- `web/` — `live3d.html` (the app) and `serve.sh`
-- `models3d/` — test heads; gitignored, re-fetch with `models3d/fetch.sh`.
-  The real character model arrives via `AVATAR3D-HANDOFF.md` (repo root)
-- `tools/` — .glb acceptance checks: `glb_inspect.py` (headless/CI) and
-  `verify_glb_threejs.html` (browser truth)
-- `archive/` — the three earlier approaches (toon 2D avatar, photoreal
-  one-shot swap, facepaint) plus the python tracking they shared. Still
-  runnable; see `archive/README.md`
+Hotkeys on the page: `h` hide avatar · `v` hide video · `m` mirror/direct ·
+`d` debug · scroll wheel zooms. `?model=` swaps in any .vrm.
 
 ## What a model needs
 
-A .glb (or anything convertible to one) whose mesh carries the ARKit-51
-morph targets — `tools/glb_inspect.py <model.glb>` grades a candidate in
-seconds. A model without morphs still tracks as a rigid head; the face
-just won't animate.
+A **rigged VRM** (VRM 0 or 1): humanoid skeleton for the body, ideally the
+standard expression set (blink/aa/happy/surprised) for the face. An unrigged
+mesh cannot be body-tracked — the pipeline for turning a generated statue
+into a VRM is: regenerate in A-pose → Mixamo auto-rig → Blender VRM export.
+
+## Layout
+
+- `web/` — `livebody.html` (the app) and `serve.sh`
+- `models3d/` — test models; gitignored, re-fetch with `models3d/fetch.sh`
+- `tools/` — .glb inspection: `glb_inspect.py`, `verify_glb_threejs.html`
+- `archive/` — everything superseded, still runnable (see `archive/README.md`):
+  the three pre-3D approaches (toon avatar, photoreal swap, facepaint) with
+  their python tracking, and **`live3d.html`** — the face-only rigid-head
+  page (dropped 2026-09-12 when livebody became the product; it remains the
+  only page that drives *unrigged* .glb heads with ARKit-51 morphs, so it
+  comes back with one `git mv` if that capability is ever needed)

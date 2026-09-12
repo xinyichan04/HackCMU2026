@@ -6,12 +6,16 @@ measured rather than documented are tagged.
 
 ---
 
-> **Update 2026-09-12:** §6.3's advice became the decision — tracking now runs **in the browser**
-> and the live consumer of your `.glb` is `poc/web/live3d.html` (it measures its own anchors at
-> load; nothing is tuned to a specific model). The python pipeline below still works but moved to
-> `poc/archive/` (paths already corrected in this doc); use it only for the JSONL replay trick in
-> §7 or offline checks. **Your deliverable is unchanged:** a `.glb` that passes
-> `poc/tools/glb_inspect.py`.
+> **Update 2026-09-12 (second, supersedes the first):** Felix pivoted the project to
+> **full-body tracking** — the product is now `poc/web/livebody.html` (MediaPipe Pose + Kalidokit
+> driving a **rigged VRM**), and `live3d.html`, this doc's consumer, is archived at
+> `poc/archive/live3d.html`. **That means the ARKit-51 `.glb` deliverable below has no live
+> consumer right now — check with Felix before spending more time on it.** If the face lane
+> continues, the natural retarget is a **VRM with a humanoid skeleton that also carries the same
+> ARKit-51 morphs** (livebody can map them the way live3d did); the morph requirements in §5 and
+> the `glb_inspect.py` checks stay valid for that. Earlier update, kept for context: tracking
+> moved into the browser, the python pipeline lives on in `poc/archive/` (paths in this doc are
+> corrected), JSONL replay per §7 still works for camera-free development.
 
 
 ## 0. The one-paragraph version

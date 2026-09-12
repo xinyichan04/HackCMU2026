@@ -6,11 +6,9 @@ PORT="${1:-8901}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 echo "serving $ROOT on http://localhost:$PORT"
 echo
-echo "   open:  http://localhost:$PORT/poc/web/live3d.html"
+echo "   open:  http://localhost:$PORT/poc/web/livebody.html"
 echo
-echo "   options:  ?model=../models3d/arkit51-test-head.glb   swap the model"
-echo "             ?scale=1.2                                 resize the head"
-echo "             ?mirror=0                                  stop mirroring the video"
+echo "   options:  ?model=../models3d/vrm-sample.vrm          swap the model (.vrm)"
 echo
 cd "$ROOT"
 exec python3 -m http.server "$PORT" --bind 127.0.0.1
