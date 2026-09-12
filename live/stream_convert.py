@@ -98,6 +98,7 @@ def main() -> int:
     parser.add_argument("--pitch", type=int, default=0)
     parser.add_argument("--f0-method", choices=["pm", "rmvpe"], default="rmvpe")
     parser.add_argument("--index-rate", type=float, default=0.75)
+    parser.add_argument("--nprobe", type=int, default=8, help="IVF clusters searched per retrieval query (higher = more reliable, still cheap).")
     parser.add_argument("--block-time", type=float, default=0.25, help="Chunk size in seconds (RVC's own default).")
     parser.add_argument("--crossfade-time", type=float, default=0.05, help="SOLA crossfade length in seconds.")
     parser.add_argument("--extra-time", type=float, default=2.5, help="Look-back context window in seconds.")
@@ -131,6 +132,7 @@ def main() -> int:
         f0_method=args.f0_method,
         pitch=args.pitch,
         index_rate=args.index_rate,
+        nprobe=args.nprobe,
     )
     converter.load(args.model or default_model_name(), args.index)
 

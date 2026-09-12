@@ -60,12 +60,22 @@ class VoiceConverter:
         pitch: int = 0,
         formant: float = 0.0,
         index_rate: float = 0.75,
+        nprobe: int = 8,
         sample_rate: int | None = None,
     ):
         """Defaults (block_time/crossfade_time/extra_time) mirror RVC's own
         realtime_gui.py defaults -- they're already tuned for this exact
         algorithm, not a guess. sample_rate=None uses the model's own
         target sample rate.
+
+        nprobe: how many IVF clusters the retrieval index searches per
+        query. train_index.py always bakes in nprobe=1 (searches only the
+        single nearest cluster), which is too restrictive for indexes with
+        uneven cluster sizes -- a query landing in a sparse cluster (fewer
+        than the requested 8 neighbors) silently falls back to no
+        retrieval blending for that chunk. Raising it (safe to change at
+        search time, no retraining needed) makes retrieval succeed far
+        more consistently at a small, real-time-safe compute cost.
         """
         self.block_time = block_time
         self.crossfade_time = crossfade_time
@@ -74,6 +84,7 @@ class VoiceConverter:
         self.pitch = pitch
         self.formant = formant
         self.index_rate = index_rate
+        self.nprobe = nprobe
         self._forced_sample_rate = sample_rate
         self._loaded = False
 
@@ -124,6 +135,8 @@ class VoiceConverter:
                 f"{resolved_index!r} -- try --index-rate 0 to skip the index entirely, or pass a "
                 f"different --index path, to confirm whether that's the issue."
             )
+        if hasattr(self.rvc, "index"):
+            self.rvc.index.nprobe = self.nprobe
 
         device = self.config.device
         self.sample_rate = self._forced_sample_rate or self.rvc.tgt_sr
