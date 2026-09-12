@@ -121,6 +121,8 @@ def main() -> int:
     if args.input_file:
         args.input_file = Path(args.input_file).resolve()
         args.output_file = Path(args.output_file).resolve()
+    if args.index:
+        args.index = str(Path(args.index).resolve())
 
     converter = VoiceConverter(
         block_time=args.block_time,
