@@ -72,6 +72,30 @@ if h < 0.5:                      # nothing humanoid is half a meter tall — uni
 else:
     print(f'height {h:.3f} m — no unit fix needed')
 
+# --- de-chrome: Mixamo's FBX carries legacy Phong specular/reflectivity, which
+# Blender's importer maps onto Principled Metallic. Measured on a real Mixamo
+# export: metallic=1.0, specular=1.0 -- that is exactly the "everything looks
+# like liquid metal" symptom, and it survives into the VRM's glTF PBR block.
+# Skin and cloth are dielectrics; force that, and keep enough roughness that the
+# remaining highlight reads as fabric rather than a mirror.
+for m in bpy.data.materials:
+    if not m.use_nodes:
+        continue
+    bsdf = next((n for n in m.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    if not bsdf:
+        continue
+    was = bsdf.inputs['Metallic'].default_value
+    bsdf.inputs['Metallic'].default_value = 0.0
+    if bsdf.inputs['Roughness'].default_value < 0.4:
+        bsdf.inputs['Roughness'].default_value = 0.6
+    # Blender 4.x renamed this socket; support both so the script is version-proof.
+    for k in ('Specular IOR Level', 'Specular'):
+        if k in bsdf.inputs:
+            bsdf.inputs[k].default_value = 0.5
+            break
+    if was:
+        print(f'de-chrome: {m.name} metallic {was:.2f} -> 0.0')
+
 # --- reattach texture if materials came through bare ---
 if TEXTURE:
     img = bpy.data.images.load(TEXTURE)
