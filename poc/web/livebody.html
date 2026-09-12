@@ -143,16 +143,27 @@ async function loadModel(url) {
 }
 
 /* ---------- rig application (Kalidokit demo conventions, three-vrm v2 normalized bones) ----------
-   SETTLED BY FELIX'S EYES (2026-09-12): with the extra swap+negate applied, arms moved
-   inverted (up when he pointed down) and legs came out cross-mapped — exactly the signature
-   of mirroring twice. Kalidokit's output is already mirror-convention (it was built for
-   VTuber mirror setups), so the body path is now a direct passthrough. [m] still flips to
-   the double-transform composition for comparison, but direct is the verified default.
+   EMPIRICAL LOG (Felix's eyes, 2026-09-12) — two compositions tested so far:
+   - swap+negate: arms vertically INVERTED, legs cross-mapped.
+   - direct passthrough: verticality CORRECT, but sides anatomical (his right hand drives
+     the avatar's right hand — reads flipped when facing her; screenshot confirmed).
+   Together these point at swap-WITHOUT-negate: tasks-vision labels landmarks anatomically,
+   while the legacy Holistic input Kalidokit was designed around was selfie-flipped — so
+   restoring Kalidokit's expected frame means swapping L/R keys and leaving its per-side
+   sign math alone. That is now the default; [m] cycles all four compositions so the verdict
+   stays one keypress away instead of one deploy away.
    The head is NOT part of this: its mirror negation lives in applyFace, was proven on the
    live3d page independently of Kalidokit, and [m] does not touch it. */
-let MIRRORED = false;
+const MODES = [
+  { swap:true,  neg:false, label:'mirror (swap only)' },
+  { swap:false, neg:false, label:'direct' },
+  { swap:true,  neg:true,  label:'swap+negate' },
+  { swap:false, neg:true,  label:'negate only' },
+];
+let modeIdx = 0;
+const MODE = () => MODES[modeIdx];
 const SWAP = { Left:'Right', Right:'Left' };
-const mirrorName = n => MIRRORED ? n.replace(/^(Left|Right)/, (_, s) => SWAP[s]) : n;
+const mirrorName = n => MODE().swap ? n.replace(/^(Left|Right)/, (_, s) => SWAP[s]) : n;
 const lower = s => s[0].toLowerCase() + s.slice(1);
 const _e = new THREE.Euler(), _q = new THREE.Quaternion();
 
@@ -160,7 +171,7 @@ function rigRotation(name, rot, damp = 1, lerp = 0.3) {
   if (!vrm || !rot) return;
   const node = vrm.humanoid.getNormalizedBoneNode(lower(mirrorName(name)));
   if (!node) return;
-  const my = MIRRORED ? -1 : 1;
+  const my = MODE().neg ? -1 : 1;
   _e.set(rot.x * damp, rot.y * damp * my, rot.z * damp * my, rot.rotationOrder || 'XYZ');
   node.quaternion.slerp(_q.setFromEuler(_e), lerp);
 }
@@ -227,7 +238,7 @@ function applyPose(res, vw, vh) {
   // Side-shuffle follows the tracked hips; depth stays fixed so scale never swims.
   const hipsNode = vrm.humanoid.getNormalizedBoneNode('hips');
   if (hipsNode && rigged.Hips.position) {
-    const mx = MIRRORED ? -1 : 1;
+    const mx = MODE().swap ? -1 : 1;   // side-shuffle follows the mirror-feel bundle
     hipsNode.position.x += (rigged.Hips.position.x * mx - hipsNode.position.x) * 0.07;
   }
   rigRotation('Chest', rigged.Spine, 0.25, 0.3);
@@ -320,9 +331,12 @@ addEventListener('keydown', e => {
   if (e.key === 'h') showAvatar = !showAvatar;
   if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
   if (e.key === 'd') debugOn = !debugOn;
-  if (e.key === 'm') { MIRRORED = !MIRRORED; $('m-mode').textContent = MIRRORED ? 'double-mirrored' : 'direct'; }
+  if (e.key === 'm') {
+    modeIdx = (modeIdx + 1) % MODES.length;
+    $('m-mode').textContent = `${modeIdx + 1}/4 ${MODE().label}`;
+  }
 });
-$('m-mode').textContent = 'direct';
+$('m-mode').textContent = `1/4 ${MODES[0].label}`;
 
 window.__selftest = () => JSON.stringify({
   modelLoaded: !!vrm,
