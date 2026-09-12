@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>live body — tracking → VRM</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0b0d10; color:#e6e9ef; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; }
+  #stage { position:fixed; inset:0; }
+  video, canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  video { object-fit:cover; transform:scaleX(-1); }         /* mirror: it should feel like a mirror */
+  canvas { pointer-events:none; }
+  #hud { position:fixed; top:12px; left:12px; padding:10px 12px; background:#0b0d10cc; border:1px solid #2a3340;
+         border-radius:8px; backdrop-filter:blur(6px); max-width:340px; }
+  #hud b { color:#8ab4ff; font-weight:600; }
+  #status { color:#ffd479; }
+  .row { display:flex; justify-content:space-between; gap:14px; }
+  .row span:last-child { color:#9fb0c5; }
+  #keys { position:fixed; bottom:12px; left:12px; color:#6d7d91; }
+  #err { position:fixed; inset:auto 12px 12px 12px; padding:10px 12px; background:#3a1214; border:1px solid #7a2a2f;
+         border-radius:8px; color:#ffb3b8; display:none; white-space:pre-wrap; }
+  #note { position:fixed; inset:auto 12px 12px 12px; max-height:60vh; overflow:auto; padding:12px 14px;
+          background:#12202e; border:1px solid #2f5d86; border-radius:8px; color:#cfe4ff;
+          display:none; white-space:pre-wrap; }
+  #note b { color:#8ab4ff; }
+</style>
+
+<div id="stage">
+  <video id="cam" playsinline autoplay muted></video>
+  <canvas id="gl"></canvas>
+</div>
+
+<div id="hud">
+  <div><b>live body</b></div>
+  <div id="status">booting…</div>
+  <div class="row"><span>model</span><span id="m-model">—</span></div>
+  <div class="row"><span>body</span><span id="m-body">—</span></div>
+  <div class="row"><span>face</span><span id="m-face">—</span></div>
+  <div class="row"><span>legs</span><span id="m-legs">—</span></div>
+  <div class="row"><span>fps</span><span id="m-fps">—</span></div>
+  <div class="row"><span>mode</span><span id="m-mode">—</span></div>
+</div>
+<div id="keys">[h] hide avatar · [v] hide video · [m] mirror mode · [d] debug · wheel zoom</div>
+<div id="err"></div>
+<div id="note"></div>
+
+<!-- Kalidokit ships UMD; loaded before the module so `Kalidokit` is a global there. -->
+<script src="https://cdn.jsdelivr.net/npm/kalidokit@1.1.5/dist/kalidokit.umd.js"></script>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "@pixiv/three-vrm":"https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.1.1/lib/three-vrm.module.min.js"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { FaceLandmarker, PoseLandmarker, FilesetResolver }
+  from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs';
+
+const qs    = new URLSearchParams(location.search);
+const MODEL = qs.get('model') || '../models3d/vrm-sample.vrm';
+
+const $ = id => document.getElementById(id);
+const status = s => { $('status').textContent = s; };
+/* Append, never replace — same rationale as live3d.html. */
+const fail = e => {
+  const b=$('err'); b.style.display='block';
+  b.textContent = (b.textContent ? b.textContent + '\n\n' : '') + 'ERROR\n' + (e && e.stack || e);
+  status('failed');
+};
+const note = html => { const b=$('note'); b.style.display='block'; b.innerHTML = html; };
+window.addEventListener('error', ev => fail(ev.error || ev.message));
+
+/* ---------- WebGL guard: identical constraints to live3d.html (see its notes) ---------- */
+function probeWebGL() {
+  const out = { gl2:false, gl1:false, reason:null };
+  try {
+    const c = document.createElement('canvas');
+    out.gl2 = !!c.getContext('webgl2');
+    out.gl1 = out.gl2 || !!(c.getContext('webgl') || c.getContext('experimental-webgl'));
+    if (!out.gl1) out.reason = 'the browser returned no WebGL context';
+  } catch (e) { out.reason = String(e && e.message || e); }
+  return out;
+}
+const GL = probeWebGL();
+let renderer = null;
+if (GL.gl1) {
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas: $('gl'), alpha:true, antialias:true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  } catch (e) { GL.reason = String(e && e.message || e); }
+}
+if (!renderer) {
+  note('<b>This page cannot run in this browser: there is no WebGL.</b>\nreason: ' +
+       (GL.reason || 'WebGLRenderer could not be created') +
+       '\n\nSee live3d.html for the full recovery steps — same requirements, same fixes.');
+  status('stopped — no WebGL');
+  throw new Error('no WebGL');
+}
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, innerWidth/innerHeight, 0.1, 50);
+camera.position.set(0, 1.15, 2.6);
+camera.lookAt(0, 0.95, 0);
+scene.add(new THREE.AmbientLight(0xffffff, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.9); key.position.set(0.4, 0.8, 1); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 0.7); rim.position.set(-0.6, 0.2, -0.8); scene.add(rim);
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+addEventListener('wheel', e => {
+  camera.position.z = Math.min(5, Math.max(1.2, camera.position.z + e.deltaY * 0.002));
+});
+
+/* ---------- VRM ---------- */
+let vrm = null, em = null;
+async function loadModel(url) {
+  status('loading model…');
+  const loader = new GLTFLoader();
+  loader.register(p => new VRMLoaderPlugin(p));
+  const gltf = await loader.loadAsync(url);
+  vrm = gltf.userData.vrm;
+  if (!vrm) throw new Error(`${url} loaded but carries no VRM extension`);
+  VRMUtils.removeUnnecessaryJoints(gltf.scene);
+  // VRM0 models face -Z; three-vrm leaves them that way. VRM1 already faces +Z (the camera).
+  if (vrm.meta?.metaVersion === '0') VRMUtils.rotateVRM0(vrm);
+  scene.add(vrm.scene);
+  em = vrm.expressionManager || null;
+  if (vrm.lookAt) vrm.lookAt.target = camera;   // meet the viewer's gaze
+  $('m-model').textContent = url.split('/').pop() +
+    ` (VRM${vrm.meta?.metaVersion ?? '?'}, ${em ? em.expressions.length : 0} expressions)`;
+}
+
+/* ---------- rig application (Kalidokit demo conventions, three-vrm v2 normalized bones) ----------
+   Mirror mode is a genuine unknown until a human looks at it: MediaPipe's L/R labeling,
+   VRM1's +Z facing and Kalidokit's VRM0-era signs are three colliding conventions, and a
+   headless session cannot see which composition reads as a mirror. So both compositions are
+   implemented and [m] switches: ON swaps L/R bones + eyes and negates yaw/roll; OFF applies
+   Kalidokit's output verbatim. Whichever looks right becomes the shipped default. */
+let MIRRORED = true;
+const SWAP = { Left:'Right', Right:'Left' };
+const mirrorName = n => MIRRORED ? n.replace(/^(Left|Right)/, (_, s) => SWAP[s]) : n;
+const lower = s => s[0].toLowerCase() + s.slice(1);
+const _e = new THREE.Euler(), _q = new THREE.Quaternion();
+
+function rigRotation(name, rot, damp = 1, lerp = 0.3) {
+  if (!vrm || !rot) return;
+  const node = vrm.humanoid.getNormalizedBoneNode(lower(mirrorName(name)));
+  if (!node) return;
+  const my = MIRRORED ? -1 : 1;
+  _e.set(rot.x * damp, rot.y * damp * my, rot.z * damp * my, rot.rotationOrder || 'XYZ');
+  node.quaternion.slerp(_q.setFromEuler(_e), lerp);
+}
+const NEUTRAL = { x:0, y:0, z:0 };
+
+/* ---------- per-frame ---------- */
+let faceLm = null, poseLm = null;
+let showAvatar = true, debugOn = false;
+let lastT = performance.now(), fps = 0;
+const clock = new THREE.Clock();
+
+function applyFace(res) {
+  const has = res.faceLandmarks && res.faceLandmarks.length > 0;
+  $('m-face').textContent = has ? 'tracking' : 'no face';
+  if (!has || !vrm) return;
+
+  // Head pose from the facial transformation matrix — the path live3d.html proved out,
+  // including the mirror identity (negate yaw+roll, keep pitch; only valid in YXZ).
+  const md = res.facialTransformationMatrixes?.[0]?.data;
+  if (md) {
+    const m = new THREE.Matrix4().fromArray(md);
+    const e = new THREE.Euler().setFromRotationMatrix(m, 'YXZ');
+    const my = MIRRORED ? -1 : 1;
+    // Split across neck and head so the motion reads as a spine, not a bobblehead.
+    _e.set(e.x * 0.35, e.y * 0.35 * my, e.z * 0.35 * my, 'YXZ');
+    vrm.humanoid.getNormalizedBoneNode('neck')?.quaternion.slerp(_q.setFromEuler(_e), 0.35);
+    _e.set(e.x * 0.65, e.y * 0.65 * my, e.z * 0.65 * my, 'YXZ');
+    vrm.humanoid.getNormalizedBoneNode('head')?.quaternion.slerp(_q.setFromEuler(_e), 0.35);
+    if (debugOn) $('m-face').textContent =
+      `yaw ${(e.y*57.3).toFixed(0)}° pitch ${(e.x*57.3).toFixed(0)}°`;
+  }
+
+  // Expressions straight from MediaPipe's calibrated 0-1 blendshape scores.
+  if (em) {
+    const sc = {};
+    for (const c of res.faceBlendshapes?.[0]?.categories || []) sc[c.categoryName] = c.score;
+    const bL = sc.eyeBlinkLeft ?? 0, bR = sc.eyeBlinkRight ?? 0;
+    em.setValue('blinkLeft',  MIRRORED ? bR : bL);
+    em.setValue('blinkRight', MIRRORED ? bL : bR);
+    em.setValue('aa', Math.min(1, (sc.jawOpen ?? 0) * 1.4));
+    em.setValue('happy', Math.min(1, ((sc.mouthSmileLeft ?? 0) + (sc.mouthSmileRight ?? 0)) * 0.5));
+    em.setValue('surprised', Math.min(1, (sc.browInnerUp ?? 0) * 0.6));
+  }
+}
+
+function applyPose(res, vw, vh) {
+  const has = res.landmarks && res.landmarks.length > 0;
+  $('m-body').textContent = has ? 'tracking' : 'no body';
+  if (!has || !vrm) { $('m-legs').textContent = '—'; return; }
+
+  const lm2d = res.landmarks[0];
+  const lm3d = res.worldLandmarks[0];
+  const rigged = Kalidokit.Pose.solve(lm3d, lm2d, {
+    runtime: 'mediapipe',
+    imageSize: { width: vw, height: vh },
+  });
+  if (!rigged) return;
+
+  rigRotation('Hips', rigged.Hips.rotation, 0.7, 0.3);
+  // Side-shuffle follows the tracked hips; depth stays fixed so scale never swims.
+  const hipsNode = vrm.humanoid.getNormalizedBoneNode('hips');
+  if (hipsNode && rigged.Hips.position) {
+    const mx = MIRRORED ? -1 : 1;
+    hipsNode.position.x += (rigged.Hips.position.x * mx - hipsNode.position.x) * 0.07;
+  }
+  rigRotation('Chest', rigged.Spine, 0.25, 0.3);
+  rigRotation('Spine', rigged.Spine, 0.45, 0.3);
+  rigRotation('LeftUpperArm',  rigged.LeftUpperArm,  1, 0.3);
+  rigRotation('LeftLowerArm',  rigged.LeftLowerArm,  1, 0.3);
+  rigRotation('LeftHand',      rigged.LeftHand,      1, 0.3);
+  rigRotation('RightUpperArm', rigged.RightUpperArm, 1, 0.3);
+  rigRotation('RightLowerArm', rigged.RightLowerArm, 1, 0.3);
+  rigRotation('RightHand',     rigged.RightHand,     1, 0.3);
+
+  // Legs only when the camera can actually see them — webcams usually cannot, and
+  // Kalidokit extrapolating from invisible knees reads as drunken staggering.
+  const kneeVis = Math.min(lm2d[25]?.visibility ?? 0, lm2d[26]?.visibility ?? 0);
+  const legsSeen = kneeVis > 0.6;
+  $('m-legs').textContent = legsSeen ? 'tracking' : `idle (knees ${Math.round(kneeVis*100)}%)`;
+  if (legsSeen) {
+    rigRotation('LeftUpperLeg',  rigged.LeftUpperLeg,  1, 0.3);
+    rigRotation('LeftLowerLeg',  rigged.LeftLowerLeg,  1, 0.3);
+    rigRotation('RightUpperLeg', rigged.RightUpperLeg, 1, 0.3);
+    rigRotation('RightLowerLeg', rigged.RightLowerLeg, 1, 0.3);
+  } else {
+    for (const n of ['LeftUpperLeg','LeftLowerLeg','RightUpperLeg','RightLowerLeg'])
+      rigRotation(n, NEUTRAL, 1, 0.1);
+  }
+}
+
+function loop(video) {
+  const t = performance.now();
+  if (video.readyState >= 2 && faceLm && poseLm) {
+    // Two trackers, one timestamp domain each; both read the same frame.
+    applyFace(faceLm.detectForVideo(video, t));
+    applyPose(poseLm.detectForVideo(video, t), video.videoWidth, video.videoHeight);
+  }
+  if (vrm) {
+    vrm.scene.visible = showAvatar;
+    vrm.update(clock.getDelta());   // expressions, look-at, spring-bone hair
+  }
+  const dt = t - lastT; lastT = t;
+  fps = fps ? fps * 0.9 + (1000 / dt) * 0.1 : 1000 / dt;
+  $('m-fps').textContent = fps.toFixed(0);
+  renderer.render(scene, camera);
+  requestAnimationFrame(() => loop(video));
+}
+
+/* ---------- MediaPipe ---------- */
+let faceLmGlobal = null;
+async function initTracking() {
+  status('loading trackers…');
+  const fileset = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm');
+  // GPU first, CPU rescue — same reasoning as live3d.html: a refused delegate is
+  // recoverable, a missing WebGL context is not (and was stopped above).
+  async function make(cls, opts) {
+    try { return await cls.createFromOptions(fileset, opts('GPU')); }
+    catch (e) {
+      console.warn(`${cls.name} GPU delegate failed, retrying on CPU:`, e && e.message);
+      return await cls.createFromOptions(fileset, opts('CPU'));
+    }
+  }
+  faceLm = await make(FaceLandmarker, delegate => ({
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate,
+    },
+    runningMode: 'VIDEO', numFaces: 1,
+    outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
+  }));
+  poseLm = await make(PoseLandmarker, delegate => ({
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+      delegate,
+    },
+    runningMode: 'VIDEO', numPoses: 1,
+  }));
+}
+
+async function initCamera() {
+  status('requesting camera…');
+  const v = $('cam');
+  v.srcObject = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
+  });
+  await v.play();
+  return v;
+}
+
+/* ---------- keys ---------- */
+addEventListener('keydown', e => {
+  if (e.key === 'h') showAvatar = !showAvatar;
+  if (e.key === 'v') $('cam').style.visibility = $('cam').style.visibility === 'hidden' ? 'visible' : 'hidden';
+  if (e.key === 'd') debugOn = !debugOn;
+  if (e.key === 'm') { MIRRORED = !MIRRORED; $('m-mode').textContent = MIRRORED ? 'mirror' : 'direct'; }
+});
+$('m-mode').textContent = 'mirror';
+
+window.__selftest = () => JSON.stringify({
+  modelLoaded: !!vrm,
+  vrmVersion: vrm?.meta?.metaVersion ?? null,
+  expressions: em ? em.expressions.length : 0,
+  bones: vrm ? ['hips','spine','chest','neck','head','leftUpperArm','rightUpperArm',
+                'leftLowerArm','rightLowerArm','leftHand','rightHand',
+                'leftUpperLeg','rightUpperLeg'].filter(b => vrm.humanoid.getNormalizedBoneNode(b)).length : 0,
+  kalidokit: typeof Kalidokit !== 'undefined' ? Object.keys(Kalidokit).includes('Pose') : false,
+  trackers: { face: !!faceLm, pose: !!poseLm },
+});
+
+(async () => {
+  try {
+    await loadModel(MODEL);
+    await initTracking();
+    const video = await initCamera();
+    status('running');
+    loop(video);
+  } catch (e) { fail(e); }
+})();
+</script>
+</html>
