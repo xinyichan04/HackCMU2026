@@ -20,6 +20,12 @@
   #keys { position:fixed; bottom:12px; left:12px; color:#6d7d91; }
   #err { position:fixed; inset:auto 12px 12px 12px; padding:10px 12px; background:#3a1214; border:1px solid #7a2a2f;
          border-radius:8px; color:#ffb3b8; display:none; white-space:pre-wrap; }
+  /* Separate from #err on purpose: a later stack trace must never overwrite the diagnosis
+     that explains it. That is exactly what happened with the WebGL message. */
+  #note { position:fixed; inset:auto 12px 12px 12px; max-height:60vh; overflow:auto; padding:12px 14px;
+          background:#12202e; border:1px solid #2f5d86; border-radius:8px; color:#cfe4ff;
+          display:none; white-space:pre-wrap; }
+  #note b { color:#8ab4ff; }
 </style>
 
 <div id="stage">
@@ -38,6 +44,7 @@
 </div>
 <div id="keys">[h] hide head · [v] hide video · [w] wireframe · [d] debug pose</div>
 <div id="err"></div>
+<div id="note"></div>
 
 <script type="importmap">
 {"imports":{
@@ -60,7 +67,14 @@ const SCALE_K  = parseFloat(qs.get('scale') || '1.0');
 
 const $ = id => document.getElementById(id);
 const status = s => { $('status').textContent = s; };
-const fail = e => { const b=$('err'); b.style.display='block'; b.textContent = 'ERROR\n' + (e && e.stack || e); console.error(e); };
+/* Append, never replace: the first error is usually the cause and the second is the symptom.
+   Overwriting meant a MediaPipe stack trace erased the WebGL explanation that preceded it. */
+const fail = e => {
+  const b=$('err'); b.style.display='block';
+  b.textContent = (b.textContent ? b.textContent + '\n\n' : '') + 'ERROR\n' + (e && e.stack || e);
+  console.error(e);
+};
+const note = html => { const b=$('note'); b.style.display='block'; b.innerHTML = html; };
 window.addEventListener('error', ev => fail(ev.error || ev.message));
 
 /* ---------- ARKit naming: MediaPipe emits camelCase, models ship either convention ---------- */
@@ -72,39 +86,59 @@ const canon = s => String(s).trim()
 const canvas   = $('gl');
 
 /* WebGL is not guaranteed: Chrome with hardware acceleration off, a blocklisted GPU or a
-   headless/remote session all fail here. Probe first and say so in plain language, then fall
-   back to a 2D overlay that still proves the tracking half works. A raw stack trace helps
-   nobody. */
+   headless/remote session all fail here.
+
+   MEASURED, and it kills the fallback this file used to advertise: MediaPipe tasks-vision
+   needs WebGL too, and NOT only for inference. Its CPU delegate changes which backend runs
+   the model, but every image still enters the graph through `_bindTextureToStream` — a GPU
+   texture upload — in `vision_bundle.mjs`. With no GL context that throws
+   `Cannot read properties of undefined (reading 'activeTexture')` from inside the wasm.
+   There is no CPU image-ingestion path in the web build. So: no WebGL ⇒ no tracking at all,
+   and a "2D fallback" that still calls detectForVideo is a fallback that cannot work.
+   Say so plainly instead of failing twice. */
 function probeWebGL() {
+  const out = { gl2:false, gl1:false, reason:null };
   try {
     const c = document.createElement('canvas');
-    const gl = c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl');
-    if (!gl) return 'the browser returned no WebGL context';
-    return null;
-  } catch (e) { return String(e && e.message || e); }
+    out.gl2 = !!c.getContext('webgl2');
+    out.gl1 = out.gl2 || !!(c.getContext('webgl') || c.getContext('experimental-webgl'));
+    if (!out.gl1) out.reason = 'the browser returned no WebGL context';
+  } catch (e) { out.reason = String(e && e.message || e); }
+  return out;
 }
 
-let renderer = null, glError = probeWebGL();
-if (!glError) {
+const GL = probeWebGL();
+let renderer = null, glError = GL.reason;
+if (GL.gl1) {
   try {
     renderer = new THREE.WebGLRenderer({ canvas, alpha:true, antialias:true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   } catch (e) { glError = String(e && e.message || e); }
 }
 const MODE3D = !!renderer;
-let ctx2d = null;
+const HOWTO =
+  '<b>How to get WebGL back</b>\n' +
+  '  1. Chrome → Settings → System → turn ON "Use graphics acceleration when available", relaunch.\n' +
+  '  2. Open <b>chrome://gpu</b>. Read the "Graphics Feature Status" block:\n' +
+  '       WebGL: Hardware accelerated  → good\n' +
+  '       WebGL: Software only         → fine, this page will run\n' +
+  '       WebGL: Disabled / Unavailable→ that is your cause; "Problems Detected" below says why.\n' +
+  '  3. If it is blocklisted, chrome://flags → "Override software rendering list" → Enabled, relaunch.\n' +
+  '  4. Fastest workaround: <b>open this page in Safari</b>. Safari on macOS always has WebGL.';
+
 if (!MODE3D) {
-  ctx2d = canvas.getContext('2d');
-  const box = $('err');
-  box.style.display = 'block';
-  box.textContent =
-    'No WebGL — the 3D head cannot render in this browser.\n' +
-    `reason: ${glError}\n\n` +
-    'Running 2D fallback instead: tracking is live and drawn over the video, so you can see the ' +
-    'face mesh and the blendshapes firing — just not the .glb head.\n\n' +
-    'To get the 3D head: Chrome → Settings → System → turn on "Use graphics acceleration when ' +
-    'available", then relaunch. Check chrome://gpu — if it says "WebGL: Unavailable" that is the ' +
-    'cause. Safari also works.';
+  note(
+    '<b>This page cannot run in this browser: there is no WebGL.</b>\n' +
+    `reason: ${glError || 'WebGLRenderer could not be created'}\n\n` +
+    'Both halves need it — three.js to draw the head, and MediaPipe to feed camera frames into\n' +
+    'the tracker (it uploads each frame as a GPU texture even with the CPU delegate). So there is\n' +
+    'no partial mode to fall back to, and I am not starting the tracker: it would only throw\n' +
+    "`reading 'activeTexture'` at you a second time.\n\n" + HOWTO);
+  status('stopped — no WebGL');
+} else if (!GL.gl2) {
+  // three.js is happy on WebGL1; MediaPipe's wasm wants a WebGL2 context. Warn, but try.
+  note('<b>WebGL1 only — no WebGL2.</b>\nThe 3D head will draw, but MediaPipe wants WebGL2 and may ' +
+       'fail to ingest camera frames.\nIf tracking never leaves "no face", this is why.\n\n' + HOWTO);
 }
 const scene  = new THREE.Scene();
 let   camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -5000, 5000);   // pixel space, set in resize()
@@ -119,7 +153,6 @@ headGroup.add(headPivot); scene.add(headGroup);
 function resize() {
   const w = innerWidth, h = innerHeight;
   if (renderer) renderer.setSize(w, h, false);
-  else { canvas.width = w * Math.min(devicePixelRatio,2); canvas.height = h * Math.min(devicePixelRatio,2); }
   camera.left = -w/2; camera.right = w/2; camera.top = h/2; camera.bottom = -h/2;
   camera.updateProjectionMatrix();
 }
@@ -178,9 +211,10 @@ async function initTracking() {
   status('loading tracker…');
   const fileset = await FilesetResolver.forVisionTasks(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm');
-  // MediaPipe's GPU delegate is itself WebGL-backed, so on a machine with no WebGL it fails
-  // with `Service "kGpuService" ... required`. Try GPU, fall back to CPU rather than dying:
-  // slower, but tracking still runs and that is the half the user came to see.
+  // Try GPU, fall back to CPU on failure: a blocklisted GPU can refuse the delegate while still
+  // serving the WebGL context MediaPipe needs for frame ingestion, and CPU inference is only
+  // slower. NOTE: this rescues a bad *delegate*, not a missing WebGL context — with no context
+  // at all the CPU path dies too, in _bindTextureToStream. That case is stopped before here.
   const opts = delegate => ({
     baseOptions: {
       modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
@@ -191,7 +225,7 @@ async function initTracking() {
     outputFaceBlendshapes: true,
     outputFacialTransformationMatrixes: true,
   });
-  const first = MODE3D ? 'GPU' : 'CPU';
+  const first = 'GPU';
   try {
     landmarker = await FaceLandmarker.createFromOptions(fileset, opts(first));
   } catch (e) {
@@ -233,50 +267,6 @@ function applyBlendshapes(categories) {
   }
   $('m-top').textContent = topVal > 0.15 ? `${topName} ${topVal.toFixed(2)}` : '—';
   return hit;
-}
-
-function screenMapper(vw, vh) {
-  const W = innerWidth, H = innerHeight;
-  const scale = Math.max(W / vw, H / vh);
-  const ox = (W - vw * scale) / 2, oy = (H - vh * scale) / 2;
-  return p => {
-    let x = p.x * vw * scale + ox;
-    if (MIRROR) x = W - x;
-    return { x, y: p.y * vh * scale + oy };
-  };
-}
-
-/* 2D fallback: no WebGL, but the tracking is the same tracking. Draw the mesh over the
-   video so the pipeline is visibly working, and show what the blendshapes are doing. */
-function draw2D(lm, shapes, vw, vh) {
-  const dpr = Math.min(devicePixelRatio, 2);
-  const g = ctx2d;
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, innerWidth, innerHeight);
-  const to = screenMapper(vw, vh);
-
-  g.fillStyle = '#7fd7ff';
-  for (const p of lm) { const q = to(p); g.fillRect(q.x - 1, q.y - 1, 2, 2); }
-
-  const CONTOURS = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
-  if (CONTOURS) {
-    g.strokeStyle = 'rgba(138,180,255,0.28)'; g.lineWidth = 1; g.beginPath();
-    for (let i = 0; i < CONTOURS.length; i += 3) {          // thin it out; 2600 edges is soup
-      const e = CONTOURS[i], a = to(lm[e.start]), b = to(lm[e.end]);
-      g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
-    }
-    g.stroke();
-  }
-
-  const top = [...shapes].filter(c => c.categoryName !== '_neutral')
-                         .sort((a, b) => b.score - a.score).slice(0, 6);
-  g.font = '12px ui-monospace,Menlo,monospace';
-  top.forEach((c, i) => {
-    const y = 24 + i * 18, w = Math.round(c.score * 160);
-    g.fillStyle = '#1b2430'; g.fillRect(innerWidth - 250, y - 11, 170, 14);
-    g.fillStyle = '#8ab4ff'; g.fillRect(innerWidth - 250, y - 11, w, 14);
-    g.fillStyle = '#e6e9ef'; g.fillText(c.categoryName, innerWidth - 250 + 176, y);
-  });
 }
 
 function placeHead(lm, matrixData, vw, vh) {
@@ -322,24 +312,17 @@ function loop(video) {
     headPivot.visible = headGroup.visible = has && showHead;
     if (has) {
       const shapes = res.faceBlendshapes?.[0]?.categories || [];
-      if (MODE3D) {
-        const mapped = applyBlendshapes(shapes);
-        $('m-mapped').textContent = `${mapped}/51`;
-        placeHead(res.faceLandmarks[0],
-                  res.facialTransformationMatrixes?.[0]?.data,
-                  video.videoWidth, video.videoHeight);
-      } else {
-        draw2D(res.faceLandmarks[0], shapes, video.videoWidth, video.videoHeight);
-        $('m-mapped').textContent = `${shapes.length - 1} tracked (2D)`;
-      }
-    } else if (!MODE3D && ctx2d) {
-      ctx2d.setTransform(1,0,0,1,0,0); ctx2d.clearRect(0,0,canvas.width,canvas.height);
+      const mapped = applyBlendshapes(shapes);
+      $('m-mapped').textContent = `${mapped}/51`;
+      placeHead(res.faceLandmarks[0],
+                res.facialTransformationMatrixes?.[0]?.data,
+                video.videoWidth, video.videoHeight);
     }
   }
   const dt = t - lastT; lastT = t;
   fps = fps ? fps * 0.9 + (1000 / dt) * 0.1 : 1000 / dt;
   $('m-fps').textContent = fps.toFixed(0);
-  if (MODE3D) renderer.render(scene, camera);
+  renderer.render(scene, camera);
   requestAnimationFrame(() => loop(video));
 }
 
@@ -379,18 +362,14 @@ window.__selftest = () => {
 
 (async () => {
   try {
-    if (MODE3D) {
-      await loadModel(MODEL);
-      status('model ok — starting tracker');
-    } else {
-      $('m-model').textContent = '2D fallback (no WebGL)';
-      status('no WebGL — starting tracker anyway');
-    }
+    if (!MODE3D) { $('m-model').textContent = 'not started (no WebGL)'; window.__stopped = 'no-webgl'; return; }
+    await loadModel(MODEL);
+    status('model ok — starting tracker');
     window.__modelReady = true;
     await initTracking();
     window.__trackerReady = true;
     const video = await initCamera();
-    status(MODE3D ? 'live' : 'live — 2D fallback');
+    status('live');
     loop(video);
   } catch (e) { status('failed'); fail(e); }
 })();
