@@ -12,7 +12,8 @@ This repo already **produces the driving signal** for a 3D avatar: per frame, ov
 emits 51 ARKit-named blendshape coefficients plus a head pose, in a stable JSON record, at 30 fps on
 an M4. **Nothing in this repo can draw a 3D model.** Your job is the render half: take that stream,
 drive a `.glb`/`.vrm` head with it, and put it on screen. The two known gotchas before you start are
-**§4 (the head-pose fields are not angles)** and **§6.2 (a browser cannot receive UDP)**.
+**§4 (the head-pose fields are not angles)** and **§6.3 (you may want to skip this repo's live path
+entirely and track in the browser)**.
 
 ---
 
@@ -209,7 +210,7 @@ morph-target support and skinning built in, and avoids fighting macOS's deprecat
 Python options (pyrender, moderngl) exist but that OpenGL deprecation is a real time sink on this
 machine [secondary — reasoning, not benchmarked here].
 
-### 6.2 A transport bridge — do not skip this
+### 6.2 A transport bridge — if you keep tracking in Python (read §6.3 first)
 
 **A browser page cannot receive UDP datagrams.** There is no API for it. So you need one of:
 
@@ -220,7 +221,46 @@ machine [secondary — reasoning, not benchmarked here].
 The bridge is the lower-risk option — it leaves `track.py` untouched and lets you restart the
 renderer without restarting tracking.
 
-### 6.3 Frame pacing
+### 6.3 The camera image — and why you may not want this bridge at all
+
+**Added after a reader correctly spotted that §6.2 gets the numbers into the browser but not the
+picture.** A head that occludes the real head has to composite over the video, so the page needs
+frames, not just coordinates.
+
+**Can `track.py` and a browser hold the camera at once? Yes** [measured — two processes opened the
+default camera simultaneously and both read frames]. So the obvious design (page calls
+`getUserMedia`, bridge unchanged) is *possible*.
+
+**But it is the wrong design, for a reason that is not about permissions.** Two independent capture
+streams are **not frame-synchronised**. `track.py` grabs, tracks and sends coefficients for *its*
+frame; the page displays a *different* frame it grabbed itself. The avatar is therefore posed from a
+moment the viewer never saw, and the offset varies with latency. A head meant to sit exactly over
+the real one visibly swims against it — and the error grows the faster the subject moves, which for
+a dance demo is precisely the case that matters.
+
+**Strongly consider doing the tracking in the browser instead.** MediaPipe ships a JS/WASM build:
+
+```html
+<script type="module">
+  import { FaceLandmarker, FilesetResolver } from
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+</script>
+```
+
+[measured — `@mediapipe/tasks-vision` v1.0.1 resolves on the CDN, browser bundle present]. It runs
+the same Face Landmarker, returns the same blendshape categories, and exposes
+`facialTransformationMatrixes` — **the 4×4 that §4 says you otherwise have to go enable in Python.**
+
+Doing that collapses four problems at once: no UDP, no WebSocket bridge, no camera sharing, and no
+synchronisation error, because one process owns the camera and the frame you track is the frame you
+draw on.
+
+`track.py` keeps its value as the probe, the recorder (`--jsonl-out`, for deterministic replay while
+you build) and the path for genuine ARKit data off an iPhone. It just does not have to be in the
+live loop. **Decide this before building the bridge in §6.2** — the bridge is only worth writing if
+you have a specific reason to keep tracking in Python.
+
+### 6.4 Frame pacing
 
 The stream is ~30 fps but irregular, and **silent whenever tracking is lost** (§2). Drive your
 render loop from `requestAnimationFrame` and treat incoming packets as *state updates*, not as
