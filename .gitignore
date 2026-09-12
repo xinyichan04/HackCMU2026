@@ -1,0 +1,4 @@
+sources/*
+!sources/.gitkeep
+!sources/README.md
+results/
