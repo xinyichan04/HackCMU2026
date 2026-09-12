@@ -4,7 +4,7 @@ external/
 # Audio data and trained model artifacts (large, personal voice data)
 data/raw/
 data/processed/
-models/
+models/*
 *.wav
 *.mp3
 *.mp4
@@ -15,6 +15,14 @@ models/
 
 # ...except smoke-test sample audio, which is small and meant to be committed
 !inference/test_audio/*.wav
+
+# ...and except the one trained voice model, committed so teammates can run
+# inference without retraining. These negations must sit after the *.pth /
+# *.index patterns above in order to override them, and models/ is spelled
+# "models/*" rather than "models/" because git does not descend into an
+# excluded directory, which would leave the negations below as dead entries.
+!models/chaewon_custom.pth
+!models/chaewon_custom.index
 
 # Python
 __pycache__/

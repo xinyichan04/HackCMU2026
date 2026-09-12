@@ -77,4 +77,17 @@ else
   echo "Already present: $RVC_DIR/logs/mute"
 fi
 
+# The trained voice model is committed under models/ so teammates don't have
+# to retrain it. Inference resolves a bare model name against assets/weights
+# (see resolve_model_path in live/converter.py), so install it there. The
+# index is copied into assets/indices, which is where RVC's own
+# get_index_path_from_model looks when --index isn't passed explicitly.
+if [ -f "$REPO_ROOT/models/chaewon_custom.pth" ]; then
+  echo "Installing committed voice model into $RVC_DIR/assets ..."
+  cp -f "$REPO_ROOT/models/chaewon_custom.pth" "$RVC_DIR/assets/weights/chaewon_custom.pth"
+  cp -f "$REPO_ROOT/models/chaewon_custom.index" "$RVC_DIR/assets/indices/chaewon_custom.index"
+else
+  echo "No committed model at models/chaewon_custom.pth, skipping model install."
+fi
+
 echo "Done. RVC vendored at $RVC_DIR with required pretrained weights."
