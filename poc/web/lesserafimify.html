@@ -169,10 +169,10 @@ const VOICE_BRIDGE = qs.get('voice') || 'http://127.0.0.1:8903';
 /* The five. Members without their own model share the placeholder, tinted.
    ?members=YUNJIN,SAKURA,... reorders the roster (which matters in position mode). */
 const MEMBERS_ALL = [
-  { name: 'SAKURA',  color: 0xff9ad5, model: MODEL },
+  { name: 'SAKURA',  color: 0xff9ad5, model: '../models3d/sakura.vrm',  own: true },
   { name: 'CHAEWON', color: 0xb18cff, model: '../models3d/chaewon.vrm', own: true },
   { name: 'YUNJIN',  color: 0xff5c7a, model: '../models3d/yunjin.vrm',  own: true },
-  { name: 'KAZUHA',  color: 0x7dd0ff, model: MODEL },
+  { name: 'KAZUHA',  color: 0x7dd0ff, model: '../models3d/kazuha.vrm',  own: true },
   { name: 'EUNCHAE', color: 0xffd166, model: '../models3d/eunchae.vrm', own: true },
 ];
 /* Only members with their OWN model are in play. Four clones of one character
