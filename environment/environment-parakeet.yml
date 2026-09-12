@@ -1,0 +1,53 @@
+# Speech-to-text environment: NVIDIA Parakeet TDT via the NeMo toolkit.
+#
+# This is deliberately a SEPARATE env from rvc-train rather than an addition
+# to it. NeMo's dependency resolution pulls numpy>=2 (2.5.x at time of
+# writing), while rvc-train is pinned at numpy 1.26.4 and has faiss/librosa
+# binaries built against it. Installing NeMo alongside RVC risks breaking a
+# working, already-trained inference pipeline for no benefit, so the two
+# stacks stay isolated and talk over audio files or a socket instead.
+#
+# Torch is installed from the cu128 index to match the driver that rvc-train
+# already runs against (see environment/environment-wsl.yml). It is listed
+# under pip rather than conda for the same reason RVC's is: the CUDA-enabled
+# build only exists on PyTorch's own index.
+#
+# Create with: conda env create -f environment/environment-parakeet.yml
+#
+# Note: NeMo is Linux-first — NVIDIA directs Windows users to WSL or Docker.
+# Running it here (WSL) rather than in the native-Windows rvc-live env is the
+# supported path.
+#
+# Microphone capture under WSL needs system packages conda can't provide:
+#
+#   sudo apt install -y libportaudio2 libasound2-plugins pulseaudio-utils
+#
+# plus ~/.asoundrc routing ALSA at the WSLg PulseServer:
+#
+#   pcm.!default { type pulse  fallback "sysdefault" }
+#   ctl.!default { type pulse  fallback "sysdefault" }
+#
+# That makes `ffmpeg -f pulse -i RDPSource` and `ffmpeg -f alsa -i default`
+# work. It does NOT make sounddevice/PortAudio work: PortAudio enumerates ALSA
+# by iterating hardware cards, WSL exposes none, so it reports zero devices.
+# Forcing the issue with an ALSA `hint` block makes Pa_Initialize fail outright.
+# inference/transcribe.py therefore captures via PulseAudio, and live/ (which
+# does use sounddevice) still has to run in the native-Windows rvc-live env.
+#
+# Measured on an RTX 4070 Laptop (8 GB): Parakeet peaks at 4.65 GiB and RVC at
+# 0.84 GiB, so both fit on the card at once with headroom.
+name: parakeet
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - ffmpeg
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.7.1+cu128
+      - torchaudio==2.7.1+cu128
+      - nemo_toolkit[asr]
+      - sounddevice
+      - soundfile
